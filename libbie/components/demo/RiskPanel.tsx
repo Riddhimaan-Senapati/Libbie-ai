@@ -50,7 +50,7 @@ function StatusPill({ status }: { status: StalenessStatus }) {
   const meta = STATUS_META[status];
   return (
     <span
-      className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium"
+      className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium whitespace-nowrap"
       style={{
         color: `var(${meta.varName})`,
         borderColor: `color-mix(in oklch, var(${meta.varName}) 40%, transparent)`,
@@ -181,38 +181,36 @@ function ReferenceDriftHero({ item }: { item: StalenessItem }) {
       }}
     >
       <div className="bg-grid bg-grid-fade pointer-events-none absolute inset-0 opacity-50" aria-hidden />
-      <div className="relative flex flex-col gap-4 @lg:flex-row @lg:items-start @lg:justify-between">
-        <div className="flex min-w-0 items-start gap-3">
-          <span
-            className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg"
-            style={{
-              color: "var(--danger)",
-              backgroundColor: "color-mix(in oklch, var(--danger) 16%, transparent)",
-            }}
-          >
-            <Dna className="size-5" />
-          </span>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-[0.7rem] font-medium tracking-wide text-danger uppercase">
-                Reference-build drift
-              </span>
-              <StatusPill status={item.status} />
-            </div>
-            <h3 className="mt-1 font-display text-lg leading-tight">
-              The cohort is anchored to a superseded genome build
-            </h3>
-            <p className="mt-1.5 max-w-prose text-sm text-muted-foreground">{item.caution}</p>
+      <div className="relative flex items-start gap-3">
+        <span
+          className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg"
+          style={{
+            color: "var(--danger)",
+            backgroundColor: "color-mix(in oklch, var(--danger) 16%, transparent)",
+          }}
+        >
+          <Dna className="size-5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[0.7rem] font-medium tracking-wide text-danger uppercase">
+              Reference-build drift
+            </span>
+            <StatusPill status={item.status} />
+          </div>
+          <h3 className="mt-1 font-display text-lg leading-tight">
+            The cohort is anchored to a superseded genome build
+          </h3>
+          <div className="mt-2 flex max-w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-border bg-background/60 px-3 py-2 font-mono text-sm">
+            <span className="text-foreground">{item.pinned}</span>
+            <ArrowRight className="size-3.5 shrink-0 text-danger" />
+            <span className="break-words text-muted-foreground">{item.current}</span>
+          </div>
+          <p className="mt-2.5 text-sm text-muted-foreground">{item.caution}</p>
+          <div className="mt-3 font-mono text-[0.7rem] break-all text-muted-foreground/70">
+            {item.source}
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2 self-start rounded-lg border border-border bg-background/60 px-3 py-2 font-mono text-sm">
-          <span className="text-foreground">{item.pinned}</span>
-          <ArrowRight className="size-3.5 text-danger" />
-          <span className="text-muted-foreground">{item.current}</span>
-        </div>
-      </div>
-      <div className="relative mt-3 font-mono text-[0.7rem] text-muted-foreground/70">
-        {item.source}
       </div>
     </div>
   );
