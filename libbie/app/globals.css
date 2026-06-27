@@ -1,0 +1,210 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+  Libbie.ai design system — Benchling-style LIGHT theme.
+  White canvas · deep-navy ink · royal-blue primary · soft blue tints · pill buttons.
+  Fusion duotone preserved: blue = code/signal, amber = conversation/human-voice.
+*/
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  --font-sans: var(--font-hanken);
+  --font-display: var(--font-hanken);
+  --font-heading: var(--font-hanken);
+  --font-mono: var(--font-jetbrains-mono);
+
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* Benchling-style soft blue section tint */
+  --color-tint: var(--tint);
+
+  /* Fusion duotone — the brand */
+  --color-code: var(--code);
+  --color-code-foreground: var(--code-foreground);
+  --color-code-soft: var(--code-soft);
+  --color-conversation: var(--conversation);
+  --color-conversation-foreground: var(--conversation-foreground);
+  --color-conversation-soft: var(--conversation-soft);
+
+  /* Semantic status */
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.4);
+}
+
+/* Benchling-style light theme is the default. */
+:root {
+  color-scheme: light;
+
+  --background: #ffffff;
+  --foreground: #000650; /* deep navy ink */
+
+  --card: #ffffff;
+  --card-foreground: #000650;
+  --popover: #ffffff;
+  --popover-foreground: #000650;
+
+  /* Primary = royal blue (Benchling "Request a demo") */
+  --primary: #000db5;
+  --primary-foreground: #f0f6fe;
+
+  --secondary: #eef2ff;
+  --secondary-foreground: #000650;
+  --muted: #f4f6fb;
+  --muted-foreground: #4a5578;
+  --accent: #e8eeff;
+  --accent-foreground: #000650;
+
+  --destructive: #d61f3f;
+  --border: #e4e8f2;
+  --input: #dde3f0;
+  --ring: #000db5;
+
+  /* Soft blue tint for big hero / feature sections */
+  --tint: #eaf0ff;
+
+  /* Fusion duotone (tuned for white) */
+  --code: #0a2bd6;
+  --code-foreground: #ffffff;
+  --code-soft: color-mix(in oklch, var(--code) 8%, white);
+  --conversation: #a85a06;
+  --conversation-foreground: #ffffff;
+  --conversation-soft: color-mix(in oklch, var(--conversation) 10%, white);
+
+  /* Status */
+  --ok: #0a8f5b;
+  --warn: #a85a06;
+  --danger: #d61f3f;
+
+  /* Charts: blue → amber → red spectrum */
+  --chart-1: #000db5;
+  --chart-2: #0a8f5b;
+  --chart-3: #6b7aa8;
+  --chart-4: #a85a06;
+  --chart-5: #d61f3f;
+
+  --radius: 0.75rem;
+
+  --sidebar: #f7f9fc;
+  --sidebar-foreground: #000650;
+  --sidebar-primary: #000db5;
+  --sidebar-primary-foreground: #f0f6fe;
+  --sidebar-accent: #e8eeff;
+  --sidebar-accent-foreground: #000650;
+  --sidebar-border: #e4e8f2;
+  --sidebar-ring: #000db5;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+  ::selection {
+    background: color-mix(in oklch, var(--primary) 22%, transparent);
+  }
+  h1, h2, h3, h4 {
+    @apply font-display tracking-tight;
+  }
+}
+
+@layer utilities {
+  /* Fine coordinate grid — very subtle on white */
+  .bg-grid {
+    background-image:
+      linear-gradient(to right, color-mix(in oklch, var(--primary) 7%, transparent) 1px, transparent 1px),
+      linear-gradient(to bottom, color-mix(in oklch, var(--primary) 7%, transparent) 1px, transparent 1px);
+    background-size: 44px 44px;
+  }
+  .bg-grid-fade {
+    -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 35%, transparent 78%);
+    mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 35%, transparent 78%);
+  }
+  /* Whisper-soft grain */
+  .grain::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0.02;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  /* Soft blue hero glow */
+  .glow-primary {
+    background: radial-gradient(60% 60% at 50% 0%, color-mix(in oklch, var(--primary) 12%, transparent), transparent 70%);
+  }
+  /* Light-blue section tint */
+  .bg-tint { background-color: var(--tint); }
+  .text-code { color: var(--code); }
+  .text-conversation { color: var(--conversation); }
+  .border-code { border-color: color-mix(in oklch, var(--code) 35%, transparent); }
+  .border-conversation { border-color: color-mix(in oklch, var(--conversation) 35%, transparent); }
+  .bg-code-soft { background-color: var(--code-soft); }
+  .bg-conversation-soft { background-color: var(--conversation-soft); }
+  /* Scanning beam */
+  @keyframes scanbeam {
+    0% { transform: translateY(-100%); opacity: 0; }
+    8% { opacity: 1; }
+    92% { opacity: 1; }
+    100% { transform: translateY(2000%); opacity: 0; }
+  }
+  .animate-scanbeam { animation: scanbeam 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+  /* Elevated card on white */
+  .panel {
+    background: var(--card);
+    border: 1px solid var(--border);
+    box-shadow: 0 1px 2px 0 color-mix(in oklch, var(--foreground) 6%, transparent),
+                0 8px 24px -12px color-mix(in oklch, var(--foreground) 10%, transparent);
+  }
+  /* Benchling-style pill */
+  .pill { border-radius: 9999px; }
+}
