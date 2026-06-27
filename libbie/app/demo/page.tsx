@@ -16,7 +16,7 @@ import {
 import type { Answer, CodeFile, CodeRef } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-import { LibbieAvatar } from "@/components/LibbieAvatar";
+import { Logo } from "@/components/Logo";
 import { SampleDataBadge } from "@/components/demo/SampleDataBadge";
 import { ReadingIntro } from "@/components/demo/ReadingIntro";
 import { PipelineRail } from "@/components/demo/PipelineRail";
@@ -296,9 +296,8 @@ function TopBar({
       >
         <ArrowLeft className="size-4" aria-hidden />
       </Link>
-      <div className="flex items-center gap-2">
-        <LibbieAvatar size={26} showStatus />
-        <span className="font-display text-[15px] text-foreground">Libbie</span>
+      <div className="flex items-center">
+        <Logo className="h-6" />
       </div>
 
       <SampleDataBadge className="hidden sm:inline-flex" />

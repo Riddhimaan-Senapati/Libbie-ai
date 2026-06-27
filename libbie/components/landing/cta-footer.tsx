@@ -6,6 +6,7 @@ import { ArrowRight, FlaskConical } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { buttonVariants } from "@/components/ui/button";
 import { LibbieAvatar } from "@/components/LibbieAvatar";
+import { Logo } from "@/components/Logo";
 import { brand, pipeline } from "@/lib/data";
 import { Reveal } from "@/components/landing/reveal";
 
@@ -69,11 +70,8 @@ export function CtaFooter() {
         <div className="mx-auto max-w-6xl px-5 py-14 sm:px-8">
           <div className="grid grid-cols-2 gap-10 sm:grid-cols-4">
             <div className="col-span-2 sm:col-span-2">
-              <Link href="/" className="flex items-center gap-2.5" aria-label={`${brand.name} home`}>
-                <LibbieAvatar size={30} showStatus />
-                <span className="font-display text-lg font-semibold tracking-tight text-foreground">
-                  {brand.name}
-                </span>
+              <Link href="/" className="flex items-center" aria-label={`${brand.name} home`}>
+                <Logo className="h-7" />
               </Link>
               <p className="mt-4 max-w-sm text-sm leading-relaxed text-muted-foreground">
                 The colleague who remembers why every pipeline was built this way.

@@ -5,7 +5,7 @@ import { motion } from "motion/react";
 
 import { cn } from "@/lib/utils";
 import { buttonVariants } from "@/components/ui/button";
-import { LibbieAvatar } from "@/components/LibbieAvatar";
+import { Logo } from "@/components/Logo";
 import { brand } from "@/lib/data";
 
 const NAV_LINKS: { label: string; href: string }[] = [
@@ -45,11 +45,8 @@ export function LandingNav() {
     >
       <AnnouncementBar />
       <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-5 sm:px-8">
-        <Link href="/" className="group flex items-center gap-2.5" aria-label={`${brand.name} home`}>
-          <LibbieAvatar size={30} showStatus />
-          <span className="font-display text-lg font-semibold tracking-tight text-foreground">
-            {brand.name}
-          </span>
+        <Link href="/" className="flex items-center" aria-label={`${brand.name} home`}>
+          <Logo className="h-7" />
         </Link>
 
         <div className="absolute left-1/2 hidden -translate-x-1/2 items-center gap-7 md:flex">
