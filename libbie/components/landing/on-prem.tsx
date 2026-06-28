@@ -10,7 +10,7 @@ const GUARANTEES: string[] = [
   "Fully local inference — Libbie answers on-device",
   "Air-gapped deployment for regulated pharma & biotech",
   "Your code and conversations never leave your environment",
-  "Audit-ready provenance for every decision she recovers",
+  "Full, traceable provenance for every decision she recovers",
 ];
 
 const LOCAL = localAnswer();
@@ -68,7 +68,7 @@ export function AirGapped() {
 
             <div className="mt-6 grid grid-cols-3 gap-3 border-t border-border pt-6">
               {[
-                { icon: <ShieldCheck className="size-4" aria-hidden />, label: "SOC-ready", sub: "audit trail" },
+                { icon: <ShieldCheck className="size-4" aria-hidden />, label: "On-device", sub: "local model" },
                 { icon: <Lock className="size-4" aria-hidden />, label: "Zero egress", sub: "by design" },
                 { icon: <ServerCog className="size-4" aria-hidden />, label: "Self-hosted", sub: "your infra" },
               ].map((stat) => (

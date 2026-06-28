@@ -1,0 +1,37 @@
+LIBBIE.AI — ACCELERATOR APPLICATION ANSWERS (each answer <= 470 characters)
+Live: https://libbie.vercel.app · Based on Libbie.ai_MVP_PRD.md + repo
+
+================================================================================
+What is your product?
+================================================================================
+Libbie.ai is an institutional-memory layer for compute-heavy R&D (genomics, biotech, pharma). When a researcher leaves, the reasoning behind their pipelines leaves too. Libbie fuses code, conversations (chat/PRs/email) and domain knowledge into one queryable memory and answers "why was this built this way?" — dual-citing the exact line of code AND the conversation that justified it, with technical and executive views, staleness flags, and one-click handover docs.
+
+================================================================================
+What is the status of your product? Do you have a prototype or MVP?
+================================================================================
+Yes — a deployed, public MVP (libbie.vercel.app) built in Next.js. It demonstrates the full experience over a curated hero genomics pipeline: dual-cited "why" answers, a technical/executive toggle, a risk & staleness panel, handover export, and an air-gapped mode. Links and answers are pre-computed for demo reliability; the live engine (ingestion, retrieval, link inference) is in active build against our architecture. Early-stage but moving fast.
+
+================================================================================
+Product demo description (optional)
+================================================================================
+A walkthrough of the live app: open a departed researcher's genomics pipeline, ask "Why GRCh37 instead of GRCh38?", and watch Libbie answer in plain language while citing the exact config line AND the original Slack thread — then flip to executive view, check staleness risks, and generate a handover doc.
+
+================================================================================
+How are you using machine learning / AI in your core product?
+================================================================================
+Four parts. (1) Embeddings over code + conversation for semantic recall. (2) Our core task: inferring which conversation explains which line of code — via explicit references, temporal proximity, and similarity, plus an LLM verification pass. (3) RAG: hybrid retrieval, reranking, then grounded dual-cited synthesis. (4) A verification step that drops any claim not backed by a citation. Provider-agnostic; the same prompts run locally for air-gapped use.
+
+================================================================================
+Do you have proprietary AI or data IP?
+================================================================================
+Not the base model — the fusion layer and domain assets on top. Proprietary: our code-to-conversation link-inference heuristics + verification that produce a confidence-scored provenance graph; a vertical genomics ontology (reference builds, versioning, format pitfalls) powering real staleness; and per-customer memory that compounds and raises switching cost. Horizontal code or knowledge tools have none of these.
+
+================================================================================
+If open-source plays a role in your development and commercialization strategy, please describe
+================================================================================
+Foundational. The app is built on Next.js/React/Tailwind; the engine on FastAPI, tree-sitter, Postgres/pgvector, LlamaIndex/DSPy, open embedders/rerankers, and Ragas/DeepEval. Self-hosted OSS plus a local model (vLLM/Ollama, Qwen3/Mistral) lets us guarantee no data leaves a customer's environment — our on-prem moat. Strategy: a proprietary platform, but we open-source the cluster-crawler utilities to drive bottom-up adoption.
+
+================================================================================
+If some other license, please describe
+================================================================================
+Not applicable. The platform ships under standard proprietary commercial licenses, with on-prem/air-gapped as a premium regulated tier. The utilities we open-source use a permissive OSI license (MIT/Apache-2.0); on-prem models (Qwen3, Mistral) are used under Apache-2.0. No copyleft attaches to our proprietary code.
