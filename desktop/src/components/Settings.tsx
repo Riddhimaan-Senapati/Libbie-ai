@@ -1,0 +1,492 @@
+import * as React from "react";
+import {
+  ArrowLeft,
+  Cpu,
+  FolderOpen,
+  HardDrive,
+  Loader2,
+  Play,
+  Square,
+  ShieldCheck,
+  Download,
+  Server,
+} from "lucide-react";
+
+import type {
+  AppConfig,
+  EngineStatus,
+  HardwareInfo,
+  ModelEntry,
+  EngineChoice,
+  IndexStatus,
+} from "@/lib/tauri";
+import { isTauri } from "@/lib/tauri";
+import { cn } from "@/lib/utils";
+import { Database, Layers } from "lucide-react";
+
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-[12px] font-medium text-foreground">{label}</span>
+      {children}
+      {hint && <span className="mt-1 block text-[11px] text-muted-foreground">{hint}</span>}
+    </label>
+  );
+}
+
+const inputCls =
+  "w-full rounded-lg border border-input bg-background px-3 py-2 text-[13px] text-foreground outline-none transition-colors focus:border-primary";
+
+export function Settings({
+  config,
+  status,
+  hardware,
+  choice,
+  models,
+  busy,
+  embedStatus,
+  embedBusy,
+  indexInfo,
+  onClose,
+  onSave,
+  onStart,
+  onStop,
+  onRefreshModels,
+  onStartEmbed,
+  onStopEmbed,
+  onBuildIndex,
+}: {
+  config: AppConfig;
+  status: EngineStatus;
+  hardware: HardwareInfo | null;
+  choice: EngineChoice | null;
+  models: ModelEntry[];
+  busy: boolean;
+  embedStatus: EngineStatus;
+  embedBusy: boolean;
+  indexInfo: IndexStatus;
+  onClose: () => void;
+  onSave: (cfg: AppConfig) => Promise<void> | void;
+  onStart: () => void;
+  onStop: () => void;
+  onRefreshModels: () => void;
+  onStartEmbed: () => void;
+  onStopEmbed: () => void;
+  onBuildIndex: () => Promise<IndexStatus>;
+}) {
+  const [draft, setDraft] = React.useState<AppConfig>(config);
+  const [saved, setSaved] = React.useState(false);
+  const [indexing, setIndexing] = React.useState(false);
+  const [indexError, setIndexError] = React.useState<string | null>(null);
+
+  React.useEffect(() => setDraft(config), [config]);
+
+  const set = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => {
+    setDraft((d) => ({ ...d, [key]: value }));
+    setSaved(false);
+  };
+
+  const save = async () => {
+    await onSave(draft);
+    setSaved(true);
+  };
+
+  const build = async () => {
+    setIndexError(null);
+    setIndexing(true);
+    try {
+      await onBuildIndex();
+    } catch (e) {
+      setIndexError(String(e));
+    } finally {
+      setIndexing(false);
+    }
+  };
+
+  const browse = async (key: "llama_binary" | "models_dir", directory: boolean) => {
+    if (!isTauri()) return;
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({ directory, multiple: false });
+    if (typeof picked === "string") set(key, picked);
+  };
+
+  return (
+    <div className="scroll-soft mx-auto h-full max-w-3xl overflow-y-auto px-6 py-6">
+      <div className="mb-6 flex items-center gap-3">
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-[12px] text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ArrowLeft className="size-3.5" aria-hidden />
+          Back
+        </button>
+        <h1 className="text-xl font-semibold">Model &amp; engine settings</h1>
+      </div>
+
+      {/* hardware + engine choice */}
+      <section className="panel mb-5 rounded-xl p-4">
+        <h2 className="mb-3 flex items-center gap-2 text-[13px] font-semibold">
+          <Cpu className="size-4 text-primary" aria-hidden /> This machine
+        </h2>
+        {hardware ? (
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-[12px] sm:grid-cols-3">
+            <Info label="OS / arch" value={`${hardware.os} · ${hardware.arch}`} />
+            <Info label="CPU threads" value={String(hardware.cpu_count)} />
+            <Info
+              label="Memory"
+              value={hardware.total_mem_mb ? `${Math.round(hardware.total_mem_mb / 1024)} GB` : "—"}
+            />
+            <Info label="NVIDIA GPU" value={hardware.has_nvidia ? "yes" : "no"} />
+            <Info
+              label="GPU"
+              value={hardware.gpu_names[0] ?? "—"}
+            />
+            <Info label="llama.cpp backend" value={hardware.llama_backend} />
+          </div>
+        ) : (
+          <p className="text-[12px] text-muted-foreground">Detecting…</p>
+        )}
+        {choice && (
+          <p className="mt-3 flex items-start gap-1.5 rounded-lg bg-primary/5 px-3 py-2 text-[12px] text-foreground">
+            <Server className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden />
+            <span>
+              <span className="font-semibold uppercase">{choice.engine}</span> — {choice.reason}
+            </span>
+          </p>
+        )}
+      </section>
+
+      {/* engine control */}
+      <section className="panel mb-5 rounded-xl p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-[13px] font-semibold">
+            <HardDrive className="size-4 text-primary" aria-hidden /> Engine
+          </h2>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-muted-foreground">{status.message}</span>
+            {status.healthy ? (
+              <button
+                type="button"
+                onClick={onStop}
+                disabled={busy}
+                className="inline-flex items-center gap-1.5 rounded-full bg-muted px-3 py-1.5 text-[12px] font-medium text-foreground disabled:opacity-40"
+              >
+                <Square className="size-3.5" aria-hidden /> Stop
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onStart}
+                disabled={busy}
+                className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-[12px] font-medium text-primary-foreground disabled:opacity-50"
+              >
+                {busy ? (
+                  <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                ) : (
+                  <Play className="size-3.5" aria-hidden />
+                )}
+                Start engine
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="llama-server binary" hint="Auto-detected when possible.">
+            <div className="flex gap-2">
+              <input
+                className={inputCls}
+                value={draft.llama_binary ?? ""}
+                onChange={(e) => set("llama_binary", e.target.value || null)}
+                placeholder="path to llama-server(.exe)"
+              />
+              {isTauri() && (
+                <button
+                  type="button"
+                  onClick={() => browse("llama_binary", false)}
+                  className="shrink-0 rounded-lg border border-border px-2.5 text-muted-foreground hover:text-foreground"
+                  aria-label="Browse for binary"
+                >
+                  <FolderOpen className="size-4" aria-hidden />
+                </button>
+              )}
+            </div>
+          </Field>
+
+          <Field label="Models directory" hint="Where pre-staged GGUF models live.">
+            <div className="flex gap-2">
+              <input
+                className={inputCls}
+                value={draft.models_dir}
+                onChange={(e) => set("models_dir", e.target.value)}
+              />
+              {isTauri() && (
+                <button
+                  type="button"
+                  onClick={() => browse("models_dir", true)}
+                  className="shrink-0 rounded-lg border border-border px-2.5 text-muted-foreground hover:text-foreground"
+                  aria-label="Browse for folder"
+                >
+                  <FolderOpen className="size-4" aria-hidden />
+                </button>
+              )}
+            </div>
+          </Field>
+
+          <Field label="Chat model (GGUF)">
+            <div className="flex gap-2">
+              <select
+                className={inputCls}
+                value={draft.chat_model ?? ""}
+                onChange={(e) => set("chat_model", e.target.value || null)}
+              >
+                <option value="">— select a model —</option>
+                {models.map((m) => (
+                  <option key={m.path} value={m.name}>
+                    {m.name}
+                    {m.size_mb ? ` (${m.size_mb} MB)` : ""}
+                  </option>
+                ))}
+                {/* keep current selection visible even if not in the folder listing */}
+                {draft.chat_model && !models.some((m) => m.name === draft.chat_model) && (
+                  <option value={draft.chat_model}>{draft.chat_model}</option>
+                )}
+              </select>
+              <button
+                type="button"
+                onClick={onRefreshModels}
+                className="shrink-0 rounded-lg border border-border px-2.5 text-[11px] text-muted-foreground hover:text-foreground"
+              >
+                Refresh
+              </button>
+            </div>
+          </Field>
+
+          <Field label="Preferred engine">
+            <select
+              className={inputCls}
+              value={draft.preferred_engine}
+              onChange={(e) =>
+                set("preferred_engine", e.target.value as AppConfig["preferred_engine"])
+              }
+            >
+              <option value="auto">Auto (detect hardware)</option>
+              <option value="llama">llama.cpp (GGUF)</option>
+              <option value="vllm">vLLM (Linux + NVIDIA)</option>
+            </select>
+          </Field>
+
+          <Field label="Context size" hint="Tokens of context window.">
+            <input
+              type="number"
+              className={inputCls}
+              value={draft.ctx_size}
+              onChange={(e) => set("ctx_size", Number(e.target.value) || 4096)}
+            />
+          </Field>
+
+          <Field label="GPU layers (-ngl)" hint="-1 = offload as many as fit.">
+            <input
+              type="number"
+              className={inputCls}
+              value={draft.gpu_layers}
+              onChange={(e) => set("gpu_layers", Number(e.target.value))}
+            />
+          </Field>
+
+          <Field label="Chat port">
+            <input
+              type="number"
+              className={inputCls}
+              value={draft.chat_port}
+              onChange={(e) => set("chat_port", Number(e.target.value) || 51820)}
+            />
+          </Field>
+
+          <Field label="Embeddings port" hint="Second llama-server for /v1/embeddings.">
+            <input
+              type="number"
+              className={inputCls}
+              value={draft.embed_port}
+              onChange={(e) => set("embed_port", Number(e.target.value) || 51821)}
+            />
+          </Field>
+        </div>
+      </section>
+
+      {/* air-gap */}
+      <section className="panel mb-5 rounded-xl p-4">
+        <label className="flex cursor-pointer items-start gap-3">
+          <input
+            type="checkbox"
+            checked={draft.offline_mode}
+            onChange={(e) => set("offline_mode", e.target.checked)}
+            className="mt-0.5 size-4 accent-[var(--primary)]"
+          />
+          <span>
+            <span className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
+              <ShieldCheck className="size-4 text-ok" aria-hidden /> Strict air-gapped mode
+            </span>
+            <span className="mt-0.5 block text-[12px] text-muted-foreground">
+              The Rust core refuses any request whose destination isn't loopback (127.0.0.1).
+              Models must be pre-staged; there is zero outbound network at runtime.
+            </span>
+          </span>
+        </label>
+      </section>
+
+      {/* embeddings + vector index */}
+      <section className="panel mb-5 rounded-xl p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-[13px] font-semibold">
+            <Database className="size-4 text-primary" aria-hidden /> Embeddings &amp; vector index
+          </h2>
+          <span className="text-[11px] text-muted-foreground">{embedStatus.message}</span>
+        </div>
+        <p className="mb-3 text-[12px] text-muted-foreground">
+          Semantic retrieval uses a local GGUF embedding model (served by a second
+          <span className="font-mono"> llama-server</span>) and an on-disk{" "}
+          <span className="font-mono">sqlite-vec</span> index — statically linked, no daemon,
+          fully offline. Without an index, Libbie falls back to keyword retrieval.
+        </p>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Embedding model (GGUF)" hint="e.g. nomic-embed-text (768-dim).">
+            <select
+              className={inputCls}
+              value={draft.embed_model ?? ""}
+              onChange={(e) => set("embed_model", e.target.value || null)}
+            >
+              <option value="">— select an embedding model —</option>
+              {models.map((m) => (
+                <option key={m.path} value={m.name}>
+                  {m.name}
+                  {m.size_mb ? ` (${m.size_mb} MB)` : ""}
+                </option>
+              ))}
+              {draft.embed_model && !models.some((m) => m.name === draft.embed_model) && (
+                <option value={draft.embed_model}>{draft.embed_model}</option>
+              )}
+            </select>
+          </Field>
+
+          <div className="flex items-end gap-2">
+            {embedStatus.healthy ? (
+              <button
+                type="button"
+                onClick={onStopEmbed}
+                disabled={embedBusy}
+                className="inline-flex items-center gap-1.5 rounded-full bg-muted px-3 py-2 text-[12px] font-medium text-foreground disabled:opacity-40"
+              >
+                <Square className="size-3.5" aria-hidden /> Stop embeddings
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onStartEmbed}
+                disabled={embedBusy}
+                className="inline-flex items-center gap-1.5 rounded-full border border-primary/40 px-3 py-2 text-[12px] font-medium text-primary disabled:opacity-40"
+              >
+                {embedBusy ? (
+                  <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                ) : (
+                  <Play className="size-3.5" aria-hidden />
+                )}
+                Start embeddings
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-3 rounded-lg bg-muted/40 px-3 py-2.5">
+          <Layers className="size-4 text-primary" aria-hidden />
+          <span className="text-[12px] text-foreground">
+            {indexInfo.indexed ? (
+              <>
+                Index built ·{" "}
+                <span className="font-mono">{indexInfo.count}</span> chunks
+                {indexInfo.dim ? (
+                  <>
+                    {" "}
+                    · <span className="font-mono">{indexInfo.dim}</span>-dim
+                  </>
+                ) : null}
+              </>
+            ) : (
+              "No vector index yet — keyword retrieval is active."
+            )}
+          </span>
+          <button
+            type="button"
+            onClick={build}
+            disabled={indexing || embedBusy}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-[12px] font-medium text-primary-foreground disabled:opacity-50"
+          >
+            {indexing ? (
+              <Loader2 className="size-3.5 animate-spin" aria-hidden />
+            ) : (
+              <Database className="size-3.5" aria-hidden />
+            )}
+            {indexing ? "Embedding corpus…" : indexInfo.indexed ? "Rebuild index" : "Build index"}
+          </button>
+        </div>
+        {indexError && (
+          <p className="mt-2 rounded-lg bg-danger/10 px-3 py-2 text-[11px] text-danger">
+            {indexError}
+          </p>
+        )}
+      </section>
+
+      {/* model staging (HF) */}
+      <section className="panel mb-5 rounded-xl p-4">
+        <h2 className="mb-2 flex items-center gap-2 text-[13px] font-semibold">
+          <Download className="size-4 text-primary" aria-hidden /> Staging models (offline)
+        </h2>
+        <p className="mb-2 text-[12px] text-muted-foreground">
+          Air-gapped hosts have no runtime egress. Pre-stage GGUF models into the models
+          directory on a connected machine, then copy them across. From the Hugging Face Hub:
+        </p>
+        <pre className="scroll-soft overflow-x-auto rounded-lg bg-muted px-3 py-2 font-mono text-[11.5px] text-foreground">
+{`hf download Qwen/Qwen2.5-0.5B-Instruct-GGUF \\
+  qwen2.5-0.5b-instruct-q4_k_m.gguf --local-dir "${draft.models_dir}"
+
+# embeddings (optional, for vector RAG):
+hf download nomic-ai/nomic-embed-text-v1.5-GGUF \\
+  nomic-embed-text-v1.5.Q4_K_M.gguf --local-dir "${draft.models_dir}"`}
+        </pre>
+      </section>
+
+      <div className="sticky bottom-0 -mx-6 flex items-center justify-end gap-3 border-t border-border bg-background/90 px-6 py-3 backdrop-blur">
+        {saved && <span className="text-[12px] text-ok">Saved.</span>}
+        <button
+          type="button"
+          onClick={save}
+          disabled={busy}
+          className="rounded-full bg-primary px-5 py-2 text-[13px] font-medium text-primary-foreground disabled:opacity-50"
+        >
+          Save settings
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Info({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[10.5px] uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className={cn("truncate font-mono text-[12px] text-foreground")} title={value}>
+        {value}
+      </p>
+    </div>
+  );
+}

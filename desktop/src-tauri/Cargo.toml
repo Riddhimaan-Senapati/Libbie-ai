@@ -1,0 +1,35 @@
+[package]
+name = "libbie-desktop"
+version = "0.1.0"
+description = "Libbie.ai air-gapped desktop client"
+authors = ["Libbie.ai"]
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+# The Tauri application logic lives in a lib so it can be shared with tests /
+# mobile targets; `main.rs` is a thin shim that calls `run()`.
+name = "libbie_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+tokio = { version = "1", features = ["time", "process", "io-util", "rt", "rt-multi-thread", "sync", "macros"] }
+futures-util = "0.3"
+sysinfo = "0.33"
+dirs = "5"
+# Embedded vector store — pure C, statically linked (no per-platform prebuilt
+# binaries), runs anywhere SQLite runs. rusqlite "bundled" compiles SQLite in.
+rusqlite = { version = "0.32", features = ["bundled"] }
+sqlite-vec = "0.1"
+
+[features]
+# This feature is used for production builds where `devUrl` is not set.
+custom-protocol = ["tauri/custom-protocol"]

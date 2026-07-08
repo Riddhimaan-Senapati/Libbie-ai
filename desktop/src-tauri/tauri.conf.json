@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Libbie",
+  "version": "0.1.0",
+  "identifier": "ai.libbie.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Libbie.ai",
+        "width": 1360,
+        "height": 900,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "theme": "Light"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: data: https://asset.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:*"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "resources": [],
+    "externalBin": [],
+    "longDescription": "Libbie.ai air-gapped desktop client. Reconstructs the intent behind compute-heavy R&D pipelines by fusing code and conversations, answering \"why\" with dual citations — all inference runs locally via llama.cpp or vLLM, no data leaves the machine.",
+    "shortDescription": "Institutional memory for R&D pipelines — air-gapped."
+  },
+  "plugins": {
+    "shell": {
+      "open": false
+    }
+  }
+}

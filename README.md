@@ -34,12 +34,18 @@ the MVP; wired to a real local model in the main plan).
 ```
 Libbie-ai/
 ├─ libbie/        # the Next.js web app (see libbie/README.md)
+├─ desktop/       # the air-gapped Tauri desktop app (see desktop/README.md, desktop/BUILD_SPEC.md)
 ├─ docs/          # product & engineering docs
 │  ├─ Libbie.ai_MVP_PRD.md   # product requirements (MVP)
 │  ├─ mvp_plan.md            # MVP build plan (Phase 0)
 │  └─ main_plan.md           # full engineering plan (the real product)
 └─ README.md      # this file
 ```
+
+The **desktop app** (`desktop/`) is Libbie's on-prem / air-gapped deployment: the same
+copilot experience, but all inference runs locally (llama.cpp today, vLLM on NVIDIA hosts)
+via a Tauri Rust core, with zero runtime network egress. It reuses the web app's design
+system verbatim.
 
 ## Quick start
 
