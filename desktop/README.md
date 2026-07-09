@@ -47,8 +47,17 @@ pick the chat model, and press **Start engine**. When the status pill turns gree
 ## Build installers
 
 ```bash
-npm run app:build   # .msi (Windows) / .dmg (macOS) / .AppImage/.deb (Linux)
+npm run app:build                    # all installers for the current OS
+npm run tauri -- build --bundles nsis  # a single target (e.g. Windows NSIS .exe)
 ```
+
+Artifacts land in `src-tauri/target/release/bundle/`:
+- **Windows** — `nsis/*-setup.exe`, `msi/*.msi`
+- **macOS** — `dmg/*.dmg`, `macos/*.app`
+- **Linux** — `deb/*.deb`, `rpm/*.rpm`, `appimage/*.AppImage`
+
+Build per OS on that OS (Tauri does not cross-compile installers). To ship a self-contained
+installer that bundles `llama-server` as a sidecar, see `BUILD_SPEC.md` §8.1.
 
 ## Development without the Tauri shell (browser)
 

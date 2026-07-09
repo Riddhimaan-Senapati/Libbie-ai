@@ -30,14 +30,34 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "Libbie.ai",
+    "category": "DeveloperTool",
+    "copyright": "© Libbie.ai",
+    "homepage": "https://libbie.ai",
     "icon": [
-      "icons/icon.png",
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
       "icons/icon.ico"
     ],
     "resources": [],
     "externalBin": [],
     "longDescription": "Libbie.ai air-gapped desktop client. Reconstructs the intent behind compute-heavy R&D pipelines by fusing code and conversations, answering \"why\" with dual citations — all inference runs locally via llama.cpp or vLLM, no data leaves the machine.",
-    "shortDescription": "Institutional memory for R&D pipelines — air-gapped."
+    "shortDescription": "Institutional memory for R&D pipelines — air-gapped.",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    }
   },
   "plugins": {
     "shell": {

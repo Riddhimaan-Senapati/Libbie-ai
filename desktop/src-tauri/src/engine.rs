@@ -211,8 +211,9 @@ impl EngineManager {
         *self.status.lock().await = s;
     }
 
-    /// Start the chat engine per config. Spawns the process, then polls
-    /// `/health` until ready (or times out). Returns the final status.
+    /// Start the chat engine per config: detect hardware, pick the engine, and
+    /// dispatch to the engine-specific launcher. Both speak the same
+    /// OpenAI-compatible API on `chat_port`, so the client is unchanged.
     pub async fn start(&self, cfg: &AppConfig) -> Result<EngineStatus, String> {
         // If something is already running, stop it first (hot model-swap).
         self.stop().await;
@@ -220,15 +221,19 @@ impl EngineManager {
         let hw = detect_hardware();
         let choice = choose_engine(&hw, cfg);
 
-        if choice.engine == EngineKind::Vllm {
-            // vLLM lifecycle is Linux+CUDA only; documented but not spawned here
-            // on Windows/macOS. Surface a clear message instead of failing hard.
-            return Err(
-                "vLLM serving must run on a Linux + NVIDIA host. On this platform use llama.cpp."
-                    .to_string(),
-            );
+        match choice.engine {
+            EngineKind::Vllm => self.start_vllm(cfg, &choice).await,
+            EngineKind::Llama => self.start_llama(cfg, &hw, &choice).await,
         }
+    }
 
+    /// Launch llama.cpp `llama-server` (GGUF) on `chat_port`.
+    async fn start_llama(
+        &self,
+        cfg: &AppConfig,
+        hw: &HardwareInfo,
+        choice: &EngineChoice,
+    ) -> Result<EngineStatus, String> {
         let binary = cfg
             .llama_binary
             .clone()
@@ -276,7 +281,7 @@ impl EngineManager {
         let pid = child.id();
         *self.child.lock().await = Some(child);
 
-        let starting = EngineStatus {
+        self.set_status(EngineStatus {
             running: true,
             healthy: false,
             engine: Some(EngineKind::Llama),
@@ -284,10 +289,9 @@ impl EngineManager {
             base_url: Some(base_url.clone()),
             pid,
             message: "Loading model…".to_string(),
-        };
-        self.set_status(starting).await;
+        })
+        .await;
 
-        // Poll health.
         let healthy = self.wait_healthy(&base_url, Duration::from_secs(180)).await;
         let final_status = EngineStatus {
             running: true,
@@ -311,7 +315,101 @@ impl EngineManager {
         }
     }
 
-    /// Poll `GET {base}/health` until it reports ready or the deadline passes.
+    /// Launch the vLLM OpenAI-compatible server (`vllm serve …`) on `chat_port`.
+    /// Only reached on Linux + NVIDIA (see `choose_engine`). Same API contract as
+    /// llama.cpp, so the RAG/inference client needs no changes.
+    async fn start_vllm(
+        &self,
+        cfg: &AppConfig,
+        choice: &EngineChoice,
+    ) -> Result<EngineStatus, String> {
+        let binary = cfg
+            .vllm_binary
+            .clone()
+            .unwrap_or_else(|| "vllm".to_string());
+        let model = cfg.vllm_model.clone().ok_or_else(|| {
+            "No vLLM model set. Enter a HuggingFace repo id or local model path in Settings."
+                .to_string()
+        })?;
+        let base_url = cfg.chat_base_url();
+
+        let mut cmd = Command::new(&binary);
+        cmd.arg("serve")
+            .arg(&model)
+            .arg("--host")
+            .arg(&cfg.host)
+            .arg("--port")
+            .arg(cfg.chat_port.to_string())
+            .arg("--served-model-name")
+            .arg("local")
+            .arg("--gpu-memory-utilization")
+            .arg(format!("{}", cfg.vllm_gpu_mem_util))
+            .arg("--dtype")
+            .arg(&cfg.vllm_dtype);
+        if let Some(n) = cfg.vllm_max_model_len {
+            cmd.arg("--max-model-len").arg(n.to_string());
+        }
+        if let Some(q) = &cfg.vllm_quantization {
+            if !q.is_empty() {
+                cmd.arg("--quantization").arg(q);
+            }
+        }
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        let child = cmd.spawn().map_err(|e| {
+            format!(
+                "Failed to launch vLLM '{}': {}. vLLM requires Linux + NVIDIA CUDA and an \
+                 installed `vllm` (pip install vllm).",
+                binary, e
+            )
+        })?;
+        let pid = child.id();
+        *self.child.lock().await = Some(child);
+
+        self.set_status(EngineStatus {
+            running: true,
+            healthy: false,
+            engine: Some(EngineKind::Vllm),
+            model: Some(model.clone()),
+            base_url: Some(base_url.clone()),
+            pid,
+            message: "Loading model (vLLM)…".to_string(),
+        })
+        .await;
+
+        // vLLM can take a while to download/compile/load large models.
+        let healthy = self.wait_healthy(&base_url, Duration::from_secs(900)).await;
+        let final_status = EngineStatus {
+            running: true,
+            healthy,
+            engine: Some(EngineKind::Vllm),
+            model: Some(model),
+            base_url: Some(base_url),
+            pid,
+            message: if healthy {
+                format!("Ready · {}", choice.engine_label())
+            } else {
+                "vLLM started but did not become healthy in time.".to_string()
+            },
+        };
+        self.set_status(final_status.clone()).await;
+
+        if healthy {
+            Ok(final_status)
+        } else {
+            Err(final_status.message)
+        }
+    }
+
+    /// Poll `GET {base}/health` until ready or the deadline passes. Both engines
+    /// return a non-2xx (or refuse the connection) while loading and a 2xx once
+    /// ready — llama.cpp with `{"status":"ok"}`, vLLM with an empty body.
     async fn wait_healthy(&self, base_url: &str, timeout: Duration) -> bool {
         let deadline = tokio::time::Instant::now() + timeout;
         let url = format!("{}/health", base_url);
@@ -321,13 +419,7 @@ impl EngineManager {
             }
             if let Ok(resp) = self.client.get(&url).send().await {
                 if resp.status().is_success() {
-                    // llama.cpp returns 200 {"status":"ok"} once the model is
-                    // loaded, and 503 {"status":"loading model"} while warming up.
-                    match resp.text().await {
-                        Ok(body) if body.contains("\"ok\"") => return true,
-                        Ok(_) => {}
-                        Err(_) => return true, // 2xx with no body — treat as ready.
-                    }
+                    return true;
                 }
             }
             tokio::time::sleep(Duration::from_millis(700)).await;

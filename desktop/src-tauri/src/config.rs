@@ -55,6 +55,19 @@ pub struct AppConfig {
     pub ctx_size: u32,
     /// Engine preference.
     pub preferred_engine: PreferredEngine,
+
+    // ---- vLLM (Linux + NVIDIA) --------------------------------------------
+    /// Chat model for vLLM — a HuggingFace repo id or a local model directory
+    /// (NOT a GGUF file; vLLM loads full/quantized HF weights).
+    pub vllm_model: Option<String>,
+    /// Fraction of GPU memory vLLM may use (`--gpu-memory-utilization`).
+    pub vllm_gpu_mem_util: f32,
+    /// Optional cap on context length (`--max-model-len`).
+    pub vllm_max_model_len: Option<u32>,
+    /// Optional quantization method (`--quantization`), e.g. "awq", "gptq", "fp8".
+    pub vllm_quantization: Option<String>,
+    /// Weights dtype (`--dtype`): "auto" | "half" | "bfloat16" | "float16" | "float32".
+    pub vllm_dtype: String,
 }
 
 impl Default for AppConfig {
@@ -72,6 +85,11 @@ impl Default for AppConfig {
             gpu_layers: -1,
             ctx_size: 8192,
             preferred_engine: PreferredEngine::Auto,
+            vllm_model: None,
+            vllm_gpu_mem_util: 0.90,
+            vllm_max_model_len: None,
+            vllm_quantization: None,
+            vllm_dtype: "auto".to_string(),
         }
     }
 }

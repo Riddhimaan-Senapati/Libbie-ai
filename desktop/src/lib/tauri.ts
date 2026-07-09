@@ -21,6 +21,12 @@ export interface AppConfig {
   gpu_layers: number;
   ctx_size: number;
   preferred_engine: "auto" | "llama" | "vllm";
+  // vLLM (Linux + NVIDIA)
+  vllm_model: string | null;
+  vllm_gpu_mem_util: number;
+  vllm_max_model_len: number | null;
+  vllm_quantization: string | null;
+  vllm_dtype: string;
 }
 
 export interface HardwareInfo {
@@ -123,6 +129,11 @@ function devConfig(): AppConfig {
     gpu_layers: -1,
     ctx_size: 8192,
     preferred_engine: "auto",
+    vllm_model: null,
+    vllm_gpu_mem_util: 0.9,
+    vllm_max_model_len: null,
+    vllm_quantization: null,
+    vllm_dtype: "auto",
   };
   return stored ? { ...base, ...JSON.parse(stored) } : base;
 }

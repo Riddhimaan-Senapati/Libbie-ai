@@ -4,8 +4,9 @@
 on Windows with llama.cpp + a sub-1B chat model **and** the nomic-embed embedding model.
 Real semantic RAG (embeddings + `sqlite-vec` KNN) is implemented and tested end-to-end
 (a paraphrased query with no shared keywords correctly retrieved the right code line).
-Sections still flagged _(spec)_ describe production targets not exercisable on a
-CPU/Intel-GPU laptop: the **vLLM** engine (needs Linux + NVIDIA) and per-OS **installers**.
+The **vLLM** engine path is code-complete (spawn/health/config/UI) but only runs on
+Linux + NVIDIA, so it isn't runtime-verified on this CPU/Intel-GPU laptop. Per-OS
+**installers** are configured; the Windows installer is buildable here.
 
 This document conforms to `../docs/main_plan.md` (`<CURRENT_PLAN>`). The desktop app is
 **Libbie's air-gapped deployment**: identical capabilities to the web app, but all
@@ -214,8 +215,8 @@ core's addressable locations, not model output — this is the trust boundary.
 | **M4** | Model manager + air-gap | `Settings.tsx`, `config.rs` | List/select GGUF; set binary/paths/ports; strict offline mode enforced in Rust (loopback-only); HF staging documented. ✅ |
 | **M5** | Governance & views | `rag.ts`, `AnswerSurface`, `HandoverDoc` | Technical/executive re-render from one evidence set; handover doc assembled from corpus; "Sample data" labelled. ✅ |
 | **M6** | Embeddings vector RAG | `inference.rs::embed`, `vecstore.rs`, `rag.ts` | `nomic-embed` served on 51821; corpus embedded into a `sqlite-vec` `vec0` table; KNN (`MATCH … k=N`) with a `kind` filter; lexical stays as fallback. Verified: paraphrased query → correct code+conversation citations; Rust `cargo test` covers the KNN path. ✅ |
-| **M7** _(spec)_ | vLLM engine path | `engine.rs` | On Linux+NVIDIA, `choose_engine` → vLLM; client unchanged (same contract). |
-| **M8** _(spec)_ | Packaging & updates | `tauri.conf.json`, CI | Per-OS installers (`.msi`/`.dmg`/`.AppImage`); engines bundled as sidecars; offline update bundle. |
+| **M7** | vLLM engine path (code-complete) | `engine.rs`, `config.rs`, `Settings.tsx` | `choose_engine` → vLLM on Linux+NVIDIA; `start_vllm` spawns `vllm serve <model> --host --port --gpu-memory-utilization --dtype [--max-model-len] [--quantization]` on `chat_port`, health-checks `/health`; same OpenAI contract so client is unchanged; vLLM-specific settings in the UI. Not runtime-verifiable on this Intel/CPU laptop (needs Linux + NVIDIA). |
+| **M8** | Packaging (per-OS installers) | `tauri.conf.json` | `bundle.targets: all` + publisher/category/copyright + per-OS config (NSIS install mode, macOS min version, deb depends). `tauri build` yields Windows `.exe`/`.msi`, macOS `.dmg`/`.app`, Linux `.deb`/`.rpm`/`.AppImage`. Windows NSIS installer built + verified here. Engine sidecar bundling is a CI provisioning step (see §8.1). |
 
 ---
 
@@ -287,3 +288,35 @@ answers, embeddings.
   (unit-testable against `assert_loopback`).
 - Network-namespace / firewalled run: the app functions fully with all non-loopback egress
   blocked, given a pre-staged model.
+
+---
+
+## 8.1 Packaging, engine sidecars & air-gapped updates
+
+**Installers.** `bundle.targets: "all"` builds the native installer(s) for the current OS:
+Windows `.exe` (NSIS) + `.msi` (WiX); macOS `.app` + `.dmg`; Linux `.deb` + `.rpm` +
+`.AppImage`. Metadata (publisher, category, copyright) and per-OS options (NSIS install
+mode, macOS `minimumSystemVersion`, deb `depends`) are set in `tauri.conf.json`. Build per
+OS on that OS (or via CI runners) with `npm run app:build` — Tauri does not cross-compile
+installers. Signing (Windows Authenticode, macOS notarization) is wired by adding the
+relevant `bundle.windows.certificateThumbprint` / `bundle.macOS.signingIdentity` in CI; the
+build here is unsigned.
+
+**Engine sidecars (CI provisioning step).** The app currently **auto-detects or points at an
+installed `llama-server`** (and `vllm` on Linux+NVIDIA), which keeps the repo binary-free and
+the build reproducible. To ship a fully self-contained installer, bundle the engine as a
+Tauri **sidecar**:
+1. Place per-platform binaries at `src-tauri/binaries/llama-server-<target-triple>` (e.g.
+   `-x86_64-pc-windows-msvc.exe`, `-aarch64-apple-darwin`, `-x86_64-unknown-linux-gnu`).
+2. Add `"externalBin": ["binaries/llama-server"]` to `bundle` and grant
+   `shell:allow-execute` (scoped) in the capability, then spawn via the shell plugin's
+   `sidecar()` instead of an absolute path.
+3. A CI job downloads the correct llama.cpp release per runner (Metal/CUDA/Vulkan/CPU
+   variants) into `binaries/` before `tauri build`. This is deliberately left to CI because
+   the GPU-specific binaries are large and platform-bound; the repo stays lean.
+
+**Air-gapped update path.** Ship a new signed installer (or a Tauri updater bundle) on
+physical/`approved-transfer` media; the updater is configured with a **local/LAN update
+endpoint or a file** — never a public URL — so update checks stay inside the customer
+network. Models are versioned separately in the models directory and are never fetched at
+runtime.

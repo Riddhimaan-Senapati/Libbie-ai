@@ -323,6 +323,85 @@ export function Settings({
         </div>
       </section>
 
+      {/* vLLM (Linux + NVIDIA) */}
+      <section className="panel mb-5 rounded-xl p-4">
+        <h2 className="mb-1 flex items-center gap-2 text-[13px] font-semibold">
+          <Server className="size-4 text-primary" aria-hidden /> vLLM engine (Linux + NVIDIA)
+        </h2>
+        <p className="mb-3 text-[12px] text-muted-foreground">
+          Used automatically when this host is Linux with an NVIDIA GPU and a{" "}
+          <span className="font-mono">vllm</span> binary is set (or when the engine is forced to
+          vLLM). Same OpenAI-compatible contract as llama.cpp — the client is unchanged. vLLM
+          loads HuggingFace weights, not GGUF.
+        </p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="vLLM binary" hint="Path to `vllm` (defaults to `vllm` on PATH).">
+            <input
+              className={inputCls}
+              value={draft.vllm_binary ?? ""}
+              onChange={(e) => set("vllm_binary", e.target.value || null)}
+              placeholder="vllm"
+            />
+          </Field>
+          <Field label="vLLM model" hint="HuggingFace repo id or local model dir.">
+            <input
+              className={inputCls}
+              value={draft.vllm_model ?? ""}
+              onChange={(e) => set("vllm_model", e.target.value || null)}
+              placeholder="Qwen/Qwen2.5-7B-Instruct"
+            />
+          </Field>
+          <Field label="GPU memory utilization" hint="0–1 fraction of VRAM.">
+            <input
+              type="number"
+              step="0.05"
+              min="0.1"
+              max="1"
+              className={inputCls}
+              value={draft.vllm_gpu_mem_util}
+              onChange={(e) => set("vllm_gpu_mem_util", Number(e.target.value) || 0.9)}
+            />
+          </Field>
+          <Field label="Max model length" hint="Blank = model default.">
+            <input
+              type="number"
+              className={inputCls}
+              value={draft.vllm_max_model_len ?? ""}
+              onChange={(e) =>
+                set("vllm_max_model_len", e.target.value ? Number(e.target.value) : null)
+              }
+              placeholder="auto"
+            />
+          </Field>
+          <Field label="Quantization">
+            <select
+              className={inputCls}
+              value={draft.vllm_quantization ?? ""}
+              onChange={(e) => set("vllm_quantization", e.target.value || null)}
+            >
+              <option value="">none</option>
+              <option value="awq">awq</option>
+              <option value="gptq">gptq</option>
+              <option value="fp8">fp8</option>
+              <option value="bitsandbytes">bitsandbytes</option>
+            </select>
+          </Field>
+          <Field label="dtype">
+            <select
+              className={inputCls}
+              value={draft.vllm_dtype}
+              onChange={(e) => set("vllm_dtype", e.target.value)}
+            >
+              <option value="auto">auto</option>
+              <option value="bfloat16">bfloat16</option>
+              <option value="float16">float16</option>
+              <option value="half">half</option>
+              <option value="float32">float32</option>
+            </select>
+          </Field>
+        </div>
+      </section>
+
       {/* air-gap */}
       <section className="panel mb-5 rounded-xl p-4">
         <label className="flex cursor-pointer items-start gap-3">
