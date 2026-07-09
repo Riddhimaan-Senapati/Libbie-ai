@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+
+# frontend build
+dist/
+*.tsbuildinfo
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# local model cache — models are pre-staged, never committed
+models/
+*.gguf
+
+# generated icon scratch
+icon-src.png
+
+# logs / env
+*.log
+.env
+.env.*

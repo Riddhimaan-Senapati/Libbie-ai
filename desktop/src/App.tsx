@@ -1,0 +1,596 @@
+import * as React from "react";
+import { motion, AnimatePresence } from "motion/react";
+import { Command, Settings as SettingsIcon, ShieldCheck, PanelLeftOpen, Lock } from "lucide-react";
+
+import { pipeline, getCodeFile, answers, proactiveNudge, libbie } from "@/lib/data";
+import type { CodeFile, CodeRef } from "@/lib/types";
+import { retrieve, retrieveVector, chunkCorpus, buildMessages, type Retrieved } from "@/lib/rag";
+import * as api from "@/lib/tauri";
+import type {
+  AppConfig,
+  EngineStatus,
+  HardwareInfo,
+  EngineChoice,
+  ModelEntry,
+  IndexStatus,
+} from "@/lib/tauri";
+
+const EMPTY_RETRIEVED: Retrieved = {
+  code: [],
+  conversations: [],
+  confidence: 0,
+  context: "",
+  mode: "lexical",
+};
+
+const DEFAULT_ENGINE_STATUS: EngineStatus = {
+  running: false,
+  healthy: false,
+  engine: null,
+  model: null,
+  base_url: null,
+  pid: null,
+  message: "Engine stopped",
+};
+
+import { Logo } from "@/components/Logo";
+import { ReadingIntro } from "@/components/ReadingIntro";
+import { PipelineRail } from "@/components/PipelineRail";
+import { CodeCanvas, refToFocus, type CanvasFocus } from "@/components/CodeCanvas";
+import { LibbieRail, LibbieOrb, type AnswerSession } from "@/components/LibbieRail";
+import { AskLibbie } from "@/components/AskLibbie";
+import { EngineStatusPill } from "@/components/EngineStatusPill";
+import { Settings } from "@/components/Settings";
+import { Sheet } from "@/components/Overlay";
+import { RiskPanel } from "@/components/RiskPanel";
+import { HandoverDoc } from "@/components/HandoverDoc";
+import { cn } from "@/lib/utils";
+
+const DEFAULT_FILE = "conf/params.config";
+
+type Screen = "reading" | "workspace" | "settings";
+
+export default function App() {
+  const [screen, setScreen] = React.useState<Screen>("reading");
+
+  // engine + config
+  const [config, setConfig] = React.useState<AppConfig | null>(null);
+  const [status, setStatus] = React.useState<EngineStatus>({
+    running: false,
+    healthy: false,
+    engine: null,
+    model: null,
+    base_url: null,
+    pid: null,
+    message: "Engine stopped",
+  });
+  const [hardware, setHardware] = React.useState<HardwareInfo | null>(null);
+  const [choice, setChoice] = React.useState<EngineChoice | null>(null);
+  const [models, setModels] = React.useState<ModelEntry[]>([]);
+  const [engineBusy, setEngineBusy] = React.useState(false);
+
+  // embeddings + vector index
+  const [embedStatus, setEmbedStatus] = React.useState<EngineStatus>(DEFAULT_ENGINE_STATUS);
+  const [embedBusy, setEmbedBusy] = React.useState(false);
+  const [indexInfo, setIndexInfo] = React.useState<IndexStatus>({
+    indexed: false,
+    count: 0,
+    dim: null,
+  });
+
+  // workspace
+  const [selectedPath, setSelectedPath] = React.useState(DEFAULT_FILE);
+  const [focus, setFocus] = React.useState<CanvasFocus | null>(null);
+  const [session, setSession] = React.useState<AnswerSession | null>(null);
+  const [view, setView] = React.useState<"technical" | "executive">("technical");
+  const [thinkingLine, setThinkingLine] = React.useState<string>(libbie.thinkingLines[0]);
+
+  const [askOpen, setAskOpen] = React.useState(false);
+  const [leftCollapsed, setLeftCollapsed] = React.useState(false);
+  const [rightCollapsed, setRightCollapsed] = React.useState(false);
+  const [riskOpen, setRiskOpen] = React.useState(false);
+  const [handoverOpen, setHandoverOpen] = React.useState(false);
+
+  const nonce = React.useRef(0);
+  const reqId = React.useRef(0);
+
+  const selectedFile: CodeFile = getCodeFile(selectedPath) ?? pipeline.files[0];
+  const engineLabel = hardware ? `${status.engine ?? "llama"} · ${hardware.llama_backend}` : undefined;
+
+  // ---- boot -------------------------------------------------------------
+  const refreshStatus = React.useCallback(async () => {
+    try {
+      setStatus(await api.engineStatus());
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const refreshModels = React.useCallback(async () => {
+    try {
+      setModels(await api.listModels());
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const refreshEmbed = React.useCallback(async () => {
+    try {
+      setEmbedStatus(await api.embedEngineStatus());
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const refreshIndex = React.useCallback(async () => {
+    try {
+      setIndexInfo(await api.indexStatus());
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const [cfg, hw, ch] = await Promise.all([
+          api.getConfig(),
+          api.getHardware(),
+          api.getEngineChoice(),
+        ]);
+        setConfig(cfg);
+        setHardware(hw);
+        setChoice(ch);
+      } catch {
+        /* ignore */
+      }
+      await Promise.all([refreshModels(), refreshStatus(), refreshEmbed(), refreshIndex()]);
+    })();
+  }, [refreshModels, refreshStatus, refreshEmbed, refreshIndex]);
+
+  // poll engine health while in the workspace
+  React.useEffect(() => {
+    if (screen === "reading") return;
+    const id = setInterval(refreshStatus, 4000);
+    return () => clearInterval(id);
+  }, [screen, refreshStatus]);
+
+  // ---- engine control ---------------------------------------------------
+  const handleStart = React.useCallback(async () => {
+    setEngineBusy(true);
+    try {
+      const s = await api.startEngine();
+      setStatus(s);
+      return s;
+    } catch (e) {
+      const msg = String(e);
+      setStatus((prev) => ({ ...prev, healthy: false, message: msg }));
+      return null;
+    } finally {
+      setEngineBusy(false);
+    }
+  }, []);
+
+  const handleStop = React.useCallback(async () => {
+    setEngineBusy(true);
+    try {
+      await api.stopEngine();
+      await refreshStatus();
+    } finally {
+      setEngineBusy(false);
+    }
+  }, [refreshStatus]);
+
+  const handleStartEmbed = React.useCallback(async (): Promise<EngineStatus | null> => {
+    setEmbedBusy(true);
+    try {
+      const s = await api.startEmbedEngine();
+      setEmbedStatus(s);
+      return s;
+    } catch (e) {
+      const msg = String(e);
+      setEmbedStatus((p) => ({ ...p, healthy: false, message: msg }));
+      return null;
+    } finally {
+      setEmbedBusy(false);
+    }
+  }, []);
+
+  const handleStopEmbed = React.useCallback(async () => {
+    setEmbedBusy(true);
+    try {
+      await api.stopEmbedEngine();
+      await refreshEmbed();
+    } finally {
+      setEmbedBusy(false);
+    }
+  }, [refreshEmbed]);
+
+  const handleBuildIndex = React.useCallback(async (): Promise<IndexStatus> => {
+    // The index build needs the embedding engine; start it if necessary.
+    let es = embedStatus;
+    if (!es.healthy) {
+      es = (await handleStartEmbed()) ?? es;
+    }
+    if (!es.healthy) {
+      throw new Error(
+        "The embedding engine isn't ready. Select an embedding GGUF model and start it first.",
+      );
+    }
+    const s = await api.buildIndex(chunkCorpus());
+    setIndexInfo(s);
+    return s;
+  }, [embedStatus, handleStartEmbed]);
+
+  const saveConfig = React.useCallback(
+    async (cfg: AppConfig) => {
+      const saved = await api.setConfig(cfg);
+      setConfig(saved);
+      try {
+        setChoice(await api.getEngineChoice());
+      } catch {
+        /* ignore */
+      }
+      await refreshModels();
+    },
+    [refreshModels],
+  );
+
+  // ---- code focus -------------------------------------------------------
+  const focusCode = React.useCallback((ref: CodeRef) => {
+    if (getCodeFile(ref.path)) setSelectedPath(ref.path);
+    nonce.current += 1;
+    setFocus(refToFocus(ref, nonce.current));
+  }, []);
+
+  // ---- the ask / inference flow ----------------------------------------
+  const runInference = React.useCallback(
+    async (question: string, retrieved: Retrieved, audience: "technical" | "executive") => {
+      const id = ++reqId.current;
+      setSession({
+        question,
+        verdict: "",
+        streaming: true,
+        retrieved,
+        answeredLocally: !!config?.offline_mode,
+      });
+      const messages = buildMessages(question, retrieved, audience);
+      await api.askLibbie(messages, { temperature: 0.2, max_tokens: 512 }, {
+        onToken: (t) => {
+          if (id !== reqId.current) return;
+          setSession((s) => (s ? { ...s, verdict: s.verdict + t } : s));
+        },
+        onDone: () => {
+          if (id !== reqId.current) return;
+          setSession((s) => (s ? { ...s, streaming: false } : s));
+        },
+        onError: (msg) => {
+          if (id !== reqId.current) return;
+          setSession((s) =>
+            s
+              ? {
+                  ...s,
+                  streaming: false,
+                  verdict:
+                    s.verdict ||
+                    `I couldn't reach the local engine. ${msg}\n\nStart it from the status bar, then ask again.`,
+                }
+              : s,
+          );
+        },
+      });
+    },
+    [config?.offline_mode],
+  );
+
+  const ask = React.useCallback(
+    async (question: string) => {
+      setRightCollapsed(false);
+      setView("technical");
+      setThinkingLine(
+        libbie.thinkingLines[Math.floor(Math.random() * libbie.thinkingLines.length)],
+      );
+
+      // Show the thinking state immediately (before engine start + retrieval).
+      setSession({
+        question,
+        verdict: "",
+        streaming: true,
+        retrieved: EMPTY_RETRIEVED,
+        answeredLocally: !!config?.offline_mode,
+      });
+
+      // Best-effort: bring the chat engine up if it isn't ready yet.
+      if (!status.healthy) {
+        const s = await handleStart();
+        if (!s?.healthy) {
+          setSession((cur) =>
+            cur
+              ? {
+                  ...cur,
+                  streaming: false,
+                  verdict:
+                    "The local engine isn't running yet. Open Settings, pick a GGUF model, and press Start engine — then ask me again.",
+                }
+              : cur,
+          );
+          return;
+        }
+      }
+
+      // Prefer semantic (vector) retrieval when an index exists; the embedder
+      // may be down, so fall back to lexical retrieval transparently.
+      let retrieved: Retrieved | null = null;
+      if (indexInfo.indexed) {
+        retrieved = await retrieveVector(question);
+      }
+      if (!retrieved) retrieved = retrieve(question);
+
+      if (retrieved.code[0]) focusCode(retrieved.code[0]);
+      await runInference(question, retrieved, "technical");
+    },
+    [status.healthy, config?.offline_mode, indexInfo.indexed, focusCode, handleStart, runInference],
+  );
+
+  const onViewChange = React.useCallback(
+    (v: "technical" | "executive") => {
+      setView(v);
+      // Re-synthesise the SAME evidence for the new audience (real inference).
+      if (session && !session.streaming) {
+        runInference(session.question, session.retrieved, v);
+      }
+    },
+    [session, runInference],
+  );
+
+  const askNudge = React.useCallback(() => {
+    const a = answers.find((x) => x.id === proactiveNudge.answerId);
+    ask(a?.question ?? "Why was this pipeline built on GRCh37 instead of GRCh38?");
+  }, [ask]);
+
+  // ⌘K
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        if (screen === "workspace") setAskOpen((o) => !o);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [screen]);
+
+  // status line for the rail header
+  const statusLine = session?.streaming
+    ? session.verdict.length === 0
+      ? thinkingLine
+      : "Answering…"
+    : status.healthy
+      ? libbie.idleStatus
+      : status.message;
+
+  // ---- render -----------------------------------------------------------
+  if (screen === "reading") {
+    return <ReadingIntro onDone={() => setScreen("workspace")} />;
+  }
+
+  if (screen === "settings" && config) {
+    return (
+      <div className="flex h-screen flex-col">
+        <TopBar
+          offline={!!config.offline_mode}
+          status={status}
+          engineBusy={engineBusy}
+          onStart={handleStart}
+          onStop={handleStop}
+          onAsk={() => setAskOpen(true)}
+          onSettings={() => setScreen(screen === "settings" ? "workspace" : "settings")}
+          settingsActive
+        />
+        <main className="min-h-0 flex-1">
+          <Settings
+            config={config}
+            status={status}
+            hardware={hardware}
+            choice={choice}
+            models={models}
+            busy={engineBusy}
+            embedStatus={embedStatus}
+            embedBusy={embedBusy}
+            indexInfo={indexInfo}
+            onClose={() => setScreen("workspace")}
+            onSave={saveConfig}
+            onStart={handleStart}
+            onStop={handleStop}
+            onRefreshModels={refreshModels}
+            onStartEmbed={handleStartEmbed}
+            onStopEmbed={handleStopEmbed}
+            onBuildIndex={handleBuildIndex}
+          />
+        </main>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-screen flex-col overflow-hidden">
+      <TopBar
+        offline={!!config?.offline_mode}
+        status={status}
+        engineBusy={engineBusy}
+        onStart={handleStart}
+        onStop={handleStop}
+        onAsk={() => setAskOpen(true)}
+        onSettings={() => setScreen("settings")}
+      />
+
+      <div className="flex min-h-0 flex-1">
+        {/* left rail */}
+        <AnimatePresence initial={false}>
+          {!leftCollapsed && (
+            <motion.div
+              key="left"
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: 268, opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+              className="shrink-0 overflow-hidden"
+            >
+              <div className="h-full w-[268px]">
+                <PipelineRail
+                  selectedPath={selectedPath}
+                  onSelect={setSelectedPath}
+                  onCollapse={() => setLeftCollapsed(true)}
+                />
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* center canvas */}
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 p-3">
+          {leftCollapsed && (
+            <button
+              type="button"
+              onClick={() => setLeftCollapsed(false)}
+              className="flex w-fit items-center gap-1.5 rounded-lg border border-border bg-card/50 px-2.5 py-1.5 text-[12px] text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <PanelLeftOpen className="size-3.5" aria-hidden />
+              Files
+            </button>
+          )}
+          <CodeCanvas file={selectedFile} focus={focus} onLineClick={() => setAskOpen(true)} />
+        </main>
+
+        {/* right rail — Libbie */}
+        <AnimatePresence initial={false}>
+          {!rightCollapsed && (
+            <motion.div
+              key="right"
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: 396, opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+              className="shrink-0 overflow-hidden"
+            >
+              <div className="h-full w-[396px]">
+                <LibbieRail
+                  session={session}
+                  view={view}
+                  onViewChange={onViewChange}
+                  statusLine={statusLine}
+                  engineReady={status.healthy}
+                  engineLabel={engineLabel}
+                  onAskNudge={askNudge}
+                  onFocusCode={focusCode}
+                  onCollapse={() => setRightCollapsed(true)}
+                  onShowStale={() => setRiskOpen(true)}
+                  onExplainForExec={() => onViewChange("executive")}
+                  onDraftHandover={() => setHandoverOpen(true)}
+                />
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {rightCollapsed && <LibbieOrb onClick={() => setRightCollapsed(false)} proactive={!session} />}
+
+      <AskLibbie
+        open={askOpen}
+        onOpenChange={setAskOpen}
+        onAsk={ask}
+        disabled={!status.healthy}
+      />
+
+      <Sheet open={riskOpen} onClose={() => setRiskOpen(false)} title="Libbie's watchlist">
+        <RiskPanel
+          onAsk={(q) => {
+            setRiskOpen(false);
+            ask(q);
+          }}
+        />
+      </Sheet>
+
+      <Sheet open={handoverOpen} onClose={() => setHandoverOpen(false)} title="Handover document" width={760}>
+        <HandoverDoc />
+      </Sheet>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+function TopBar({
+  offline,
+  status,
+  engineBusy,
+  onStart,
+  onStop,
+  onAsk,
+  onSettings,
+  settingsActive,
+}: {
+  offline: boolean;
+  status: EngineStatus;
+  engineBusy: boolean;
+  onStart: () => void;
+  onStop: () => void;
+  onAsk: () => void;
+  onSettings: () => void;
+  settingsActive?: boolean;
+}) {
+  return (
+    <header
+      className="flex shrink-0 items-center gap-3 border-b border-border bg-background/80 px-4 py-2.5 backdrop-blur"
+      data-tauri-drag-region
+    >
+      <Logo className="h-6" />
+      <span className="hidden items-center gap-1 rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[10px] font-medium text-muted-foreground sm:inline-flex">
+        Sample data
+      </span>
+
+      <div className="ml-auto flex items-center gap-2.5">
+        {/* air-gapped indicator */}
+        <span
+          className={cn(
+            "hidden items-center gap-1 rounded-full px-2 py-1 text-[10.5px] font-medium sm:inline-flex",
+            offline ? "bg-ok/10 text-ok" : "bg-muted text-muted-foreground",
+          )}
+          title={offline ? "Strict air-gapped mode: no network egress" : "Air-gapped mode is off"}
+        >
+          {offline ? <ShieldCheck className="size-3" aria-hidden /> : <Lock className="size-3" aria-hidden />}
+          {offline ? "Air-gapped" : "Local"}
+        </span>
+
+        <EngineStatusPill status={status} busy={engineBusy} onStart={onStart} onStop={onStop} />
+
+        <button
+          type="button"
+          onClick={onAsk}
+          className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-[12.5px] font-medium text-primary-foreground"
+        >
+          <Command className="size-3.5" aria-hidden />
+          Ask Libbie
+          <kbd className="ml-1 hidden rounded bg-primary-foreground/20 px-1 font-mono text-[10px] sm:inline">
+            ⌘K
+          </kbd>
+        </button>
+
+        <button
+          type="button"
+          onClick={onSettings}
+          aria-label="Settings"
+          className={cn(
+            "rounded-full p-2 transition-colors",
+            settingsActive
+              ? "bg-primary/10 text-primary"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          )}
+        >
+          <SettingsIcon className="size-4" aria-hidden />
+        </button>
+      </div>
+    </header>
+  );
+}
