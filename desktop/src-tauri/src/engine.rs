@@ -175,6 +175,36 @@ pub fn choose_engine(hw: &HardwareInfo, cfg: &AppConfig) -> EngineChoice {
     }
 }
 
+/// Build the `vllm serve …` argument vector. Pure so it can be unit-tested
+/// against the documented vLLM CLI without launching anything.
+fn vllm_command_args(cfg: &AppConfig, model: &str) -> Vec<String> {
+    let mut args = vec![
+        "serve".to_string(),
+        model.to_string(),
+        "--host".to_string(),
+        cfg.host.clone(),
+        "--port".to_string(),
+        cfg.chat_port.to_string(),
+        "--served-model-name".to_string(),
+        "local".to_string(),
+        "--gpu-memory-utilization".to_string(),
+        format!("{}", cfg.vllm_gpu_mem_util),
+        "--dtype".to_string(),
+        cfg.vllm_dtype.clone(),
+    ];
+    if let Some(n) = cfg.vllm_max_model_len {
+        args.push("--max-model-len".to_string());
+        args.push(n.to_string());
+    }
+    if let Some(q) = &cfg.vllm_quantization {
+        if !q.is_empty() {
+            args.push("--quantization".to_string());
+            args.push(q.clone());
+        }
+    }
+    args
+}
+
 /// Owns the running engine child processes (chat + embeddings) and their status.
 pub struct EngineManager {
     child: Mutex<Option<Child>>,
@@ -334,26 +364,7 @@ impl EngineManager {
         let base_url = cfg.chat_base_url();
 
         let mut cmd = Command::new(&binary);
-        cmd.arg("serve")
-            .arg(&model)
-            .arg("--host")
-            .arg(&cfg.host)
-            .arg("--port")
-            .arg(cfg.chat_port.to_string())
-            .arg("--served-model-name")
-            .arg("local")
-            .arg("--gpu-memory-utilization")
-            .arg(format!("{}", cfg.vllm_gpu_mem_util))
-            .arg("--dtype")
-            .arg(&cfg.vllm_dtype);
-        if let Some(n) = cfg.vllm_max_model_len {
-            cmd.arg("--max-model-len").arg(n.to_string());
-        }
-        if let Some(q) = &cfg.vllm_quantization {
-            if !q.is_empty() {
-                cmd.arg("--quantization").arg(q);
-            }
-        }
+        cmd.args(vllm_command_args(cfg, &model));
         cmd.stdout(Stdio::null()).stderr(Stdio::null());
 
         #[cfg(windows)]
@@ -555,5 +566,115 @@ impl EngineChoice {
             EngineKind::Llama => "llama.cpp",
             EngineKind::Vllm => "vLLM",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::PreferredEngine;
+
+    fn cfg() -> AppConfig {
+        let mut c = AppConfig::default();
+        c.vllm_binary = Some("vllm".to_string());
+        c.vllm_model = Some("Qwen/Qwen2.5-7B-Instruct".to_string());
+        c
+    }
+
+    fn hw(os: &str, nvidia: bool) -> HardwareInfo {
+        HardwareInfo {
+            os: os.to_string(),
+            arch: "x86_64".to_string(),
+            cpu_count: 8,
+            total_mem_mb: 16_000,
+            has_nvidia: nvidia,
+            gpu_names: if nvidia {
+                vec!["NVIDIA A10".to_string()]
+            } else {
+                vec![]
+            },
+            llama_backend: if nvidia { "CUDA".into() } else { "CPU".into() },
+        }
+    }
+
+    // ---- engine selection (the LOCKED rule) -------------------------------
+
+    #[test]
+    fn auto_selects_vllm_only_on_linux_nvidia_with_binary() {
+        let mut c = cfg();
+        c.preferred_engine = PreferredEngine::Auto;
+        assert_eq!(choose_engine(&hw("linux", true), &c).engine, EngineKind::Vllm);
+    }
+
+    #[test]
+    fn auto_falls_back_to_llama_off_linux_or_without_nvidia() {
+        let mut c = cfg();
+        c.preferred_engine = PreferredEngine::Auto;
+        // No NVIDIA → llama, even on Linux.
+        assert_eq!(choose_engine(&hw("linux", false), &c).engine, EngineKind::Llama);
+        // NVIDIA but not Linux (Windows/macOS) → llama.
+        assert_eq!(choose_engine(&hw("windows", true), &c).engine, EngineKind::Llama);
+        assert_eq!(choose_engine(&hw("macos", true), &c).engine, EngineKind::Llama);
+    }
+
+    #[test]
+    fn auto_needs_a_vllm_binary_configured() {
+        let mut c = cfg();
+        c.preferred_engine = PreferredEngine::Auto;
+        c.vllm_binary = None;
+        assert_eq!(choose_engine(&hw("linux", true), &c).engine, EngineKind::Llama);
+    }
+
+    #[test]
+    fn forcing_vllm_without_support_falls_back_to_llama() {
+        let mut c = cfg();
+        c.preferred_engine = PreferredEngine::Vllm;
+        // Forced, but no NVIDIA → still llama (graceful).
+        assert_eq!(choose_engine(&hw("linux", false), &c).engine, EngineKind::Llama);
+    }
+
+    #[test]
+    fn forcing_llama_is_always_llama() {
+        let mut c = cfg();
+        c.preferred_engine = PreferredEngine::Llama;
+        assert_eq!(choose_engine(&hw("linux", true), &c).engine, EngineKind::Llama);
+    }
+
+    // ---- vLLM command construction matches the documented CLI --------------
+
+    fn pair(a: &[String], k: &str, v: &str) -> bool {
+        a.windows(2).any(|w| w[0] == k && w[1] == v)
+    }
+
+    #[test]
+    fn vllm_args_match_documented_cli() {
+        let mut c = cfg();
+        c.host = "127.0.0.1".into();
+        c.chat_port = 51820;
+        c.vllm_gpu_mem_util = 0.9;
+        c.vllm_dtype = "auto".into();
+        c.vllm_max_model_len = Some(8192);
+        c.vllm_quantization = Some("awq".into());
+        let a = vllm_command_args(&c, "Qwen/Qwen2.5-7B-Instruct");
+
+        assert_eq!(a[0], "serve");
+        assert_eq!(a[1], "Qwen/Qwen2.5-7B-Instruct");
+        assert!(pair(&a, "--host", "127.0.0.1"));
+        assert!(pair(&a, "--port", "51820"));
+        assert!(pair(&a, "--served-model-name", "local"));
+        assert!(pair(&a, "--gpu-memory-utilization", "0.9"));
+        assert!(pair(&a, "--dtype", "auto"));
+        assert!(pair(&a, "--max-model-len", "8192"));
+        assert!(pair(&a, "--quantization", "awq"));
+    }
+
+    #[test]
+    fn vllm_args_omit_optional_flags_when_unset() {
+        let mut c = cfg();
+        c.vllm_max_model_len = None;
+        c.vllm_quantization = None;
+        let a = vllm_command_args(&c, "m");
+        assert!(!a.iter().any(|x| x == "--max-model-len"));
+        assert!(!a.iter().any(|x| x == "--quantization"));
     }
 }
