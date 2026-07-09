@@ -677,4 +677,105 @@ mod tests {
         assert!(!a.iter().any(|x| x == "--max-model-len"));
         assert!(!a.iter().any(|x| x == "--quantization"));
     }
+
+    // ---- Linux runtime: exercise the full vLLM path against a shim ---------
+    //
+    // vLLM itself is CUDA-only, so this doesn't test vLLM-the-software; it tests
+    // OUR path — `detect_hardware` → `choose_engine` picks vLLM → `start_vllm`
+    // spawns `vllm serve …` → `/health` poll → healthy — using a fake
+    // `nvidia-smi` and a stand-in `vllm` that serves the OpenAI API. Unix-only;
+    // needs `python3` (skips gracefully otherwise). Run single-threaded, as it
+    // mutates PATH.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn vllm_path_spawns_and_becomes_healthy_with_shim() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
+        let has_python = std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !has_python {
+            eprintln!("skipping vllm shim test: python3 not found");
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("libbie_vllm_shim_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let write_exec = |name: &str, body: &str| -> std::path::PathBuf {
+            let p = dir.join(name);
+            std::fs::File::create(&p)
+                .unwrap()
+                .write_all(body.as_bytes())
+                .unwrap();
+            let mut perm = std::fs::metadata(&p).unwrap().permissions();
+            perm.set_mode(0o755);
+            std::fs::set_permissions(&p, perm).unwrap();
+            p
+        };
+
+        // Fake NVIDIA GPU so detect_nvidia() reports one.
+        write_exec("nvidia-smi", "#!/usr/bin/env bash\necho 'NVIDIA A10 (fake)'\n");
+
+        // Minimal OpenAI-compatible server: /health 200 + streamed chat.
+        write_exec(
+            "vllm_shim.py",
+            "import sys, json\n\
+             from http.server import BaseHTTPRequestHandler, HTTPServer\n\
+             port = int(sys.argv[sys.argv.index('--port')+1])\n\
+             class H(BaseHTTPRequestHandler):\n\
+             \x20   def log_message(self,*a): pass\n\
+             \x20   def do_GET(self):\n\
+             \x20       self.send_response(200 if self.path=='/health' else 404); self.end_headers()\n\
+             \x20   def do_POST(self):\n\
+             \x20       ln=int(self.headers.get('Content-Length',0)); self.rfile.read(ln)\n\
+             \x20       self.send_response(200); self.send_header('Content-Type','text/event-stream'); self.end_headers()\n\
+             \x20       for t in ['Hello',', ','vLLM ','shim.']:\n\
+             \x20           self.wfile.write(('data: '+json.dumps({'choices':[{'delta':{'content':t}}]})+'\\n\\n').encode()); self.wfile.flush()\n\
+             \x20       self.wfile.write(b'data: [DONE]\\n\\n'); self.wfile.flush()\n\
+             HTTPServer(('127.0.0.1',port),H).serve_forever()\n",
+        );
+
+        // `vllm` stand-in: parse --port, launch the shim server.
+        let vllm = write_exec(
+            "vllm",
+            "#!/usr/bin/env bash\n\
+             DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n\
+             port=8000\n\
+             while [ $# -gt 0 ]; do case \"$1\" in --port) port=\"$2\"; shift 2;; *) shift;; esac; done\n\
+             exec python3 \"$DIR/vllm_shim.py\" --port \"$port\"\n",
+        );
+
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{}", dir.display(), old_path));
+
+        let mut cfg = AppConfig::default();
+        cfg.preferred_engine = PreferredEngine::Vllm;
+        cfg.vllm_binary = Some(vllm.to_string_lossy().to_string());
+        cfg.vllm_model = Some("fake/model".to_string());
+        cfg.host = "127.0.0.1".to_string();
+        cfg.chat_port = 51830;
+
+        // On this Linux host with the fake GPU, selection must resolve to vLLM.
+        let hw = detect_hardware();
+        assert_eq!(hw.os, "linux");
+        assert!(hw.has_nvidia, "fake nvidia-smi should be detected");
+        assert_eq!(choose_engine(&hw, &cfg).engine, EngineKind::Vllm);
+
+        let mgr = EngineManager::new();
+        let status = mgr
+            .start(&cfg)
+            .await
+            .expect("vLLM shim should spawn and become healthy");
+        assert_eq!(status.engine, Some(EngineKind::Vllm));
+        assert!(status.healthy);
+        assert_eq!(status.base_url.as_deref(), Some("http://127.0.0.1:51830"));
+
+        mgr.stop().await;
+        std::env::set_var("PATH", old_path);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

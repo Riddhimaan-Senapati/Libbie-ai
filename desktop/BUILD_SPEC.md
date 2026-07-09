@@ -4,9 +4,10 @@
 on Windows with llama.cpp + a sub-1B chat model **and** the nomic-embed embedding model.
 Real semantic RAG (embeddings + `sqlite-vec` KNN) is implemented and tested end-to-end
 (a paraphrased query with no shared keywords correctly retrieved the right code line).
-The **vLLM** engine path is code-complete (spawn/health/config/UI) but only runs on
-Linux + NVIDIA, so it isn't runtime-verified on this CPU/Intel-GPU laptop. Per-OS
-**installers** are configured; the Windows installer is buildable here.
+The **vLLM** engine path is implemented and its selection/spawn/health wiring is
+runtime-verified on Linux (Docker) via a CUDA-free shim; only vLLM-the-GPU-binary needs
+real NVIDIA hardware, which this laptop lacks. Per-OS **installers** are configured; the
+Windows installer is built + verified here.
 
 This document conforms to `../docs/main_plan.md` (`<CURRENT_PLAN>`). The desktop app is
 **Libbie's air-gapped deployment**: identical capabilities to the web app, but all
@@ -215,7 +216,7 @@ core's addressable locations, not model output — this is the trust boundary.
 | **M4** | Model manager + air-gap | `Settings.tsx`, `config.rs` | List/select GGUF; set binary/paths/ports; strict offline mode enforced in Rust (loopback-only); HF staging documented. ✅ |
 | **M5** | Governance & views | `rag.ts`, `AnswerSurface`, `HandoverDoc` | Technical/executive re-render from one evidence set; handover doc assembled from corpus; "Sample data" labelled. ✅ |
 | **M6** | Embeddings vector RAG | `inference.rs::embed`, `vecstore.rs`, `rag.ts` | `nomic-embed` served on 51821; corpus embedded into a `sqlite-vec` `vec0` table; KNN (`MATCH … k=N`) with a `kind` filter; lexical stays as fallback. Verified: paraphrased query → correct code+conversation citations; Rust `cargo test` covers the KNN path. ✅ |
-| **M7** | vLLM engine path (code-complete) | `engine.rs`, `config.rs`, `Settings.tsx` | `choose_engine` → vLLM on Linux+NVIDIA; `start_vllm` spawns `vllm serve <model> --host --port --gpu-memory-utilization --dtype [--max-model-len] [--quantization]` on `chat_port`, health-checks `/health`; same OpenAI contract so client is unchanged; vLLM-specific settings in the UI. Not runtime-verifiable on this Intel/CPU laptop (needs Linux + NVIDIA). |
+| **M7** | vLLM engine path | `engine.rs`, `config.rs`, `Settings.tsx` | `choose_engine` → vLLM on Linux+NVIDIA; `start_vllm` spawns `vllm serve <model> --host --port --gpu-memory-utilization --dtype [--max-model-len] [--quantization]` on `chat_port`, health-checks `/health`; same OpenAI contract so client is unchanged; vLLM-specific settings in the UI. **Runtime-verified on Linux** (Docker) via a CUDA-free shim: `vllm_path_spawns_and_becomes_healthy_with_shim` drives `detect_hardware → choose_engine(vLLM) → start_vllm → /health → healthy` (9/9 `cargo test`). Only vLLM-the-GPU-binary itself needs real NVIDIA hardware. |
 | **M8** | Packaging (per-OS installers) | `tauri.conf.json` | `bundle.targets: all` + publisher/category/copyright + per-OS config (NSIS install mode, macOS min version, deb depends). `tauri build` yields Windows `.exe`/`.msi`, macOS `.dmg`/`.app`, Linux `.deb`/`.rpm`/`.AppImage`. Windows NSIS installer built + verified here. Engine sidecar bundling is a CI provisioning step (see §8.1). |
 
 ---
