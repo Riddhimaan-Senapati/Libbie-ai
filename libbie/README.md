@@ -35,4 +35,6 @@ npm run build    # production build
 - `CONTRACT.md` — the build contract (design system + data API) used to build the UI.
 
 All sample data is labelled in the UI (NFR-6). The "local / air-gapped" path is a faked
-UI toggle in this MVP; it gets wired to a real local model (Ollama) in the main plan.
+UI toggle in this web MVP; it is realized for real in the **`../desktop/`** app — a Tauri
+client running fully local inference via llama.cpp (vLLM on Linux+NVIDIA), with zero runtime
+network egress. See `../desktop/README.md`.

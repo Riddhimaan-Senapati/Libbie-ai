@@ -96,6 +96,7 @@ Every requirement below exists to make this moment instant, trustworthy, and rep
 
 ### 6.6 Deployment-Path Demonstration
 - **FR-14** The product must be able to demonstrate at least one query answered through a fully **local / air-gapped** path, to evidence that the on-prem deployment mode is real. The remainder of the MVP may run against a hosted model (see Section 12).
+  - *Implementation status: exceeded. The `desktop/` app answers **every** query through a fully local / air-gapped path — a Tauri client running local inference via llama.cpp (vLLM on Linux+NVIDIA) with zero runtime network egress. See `../desktop/BUILD_SPEC.md`.*
 
 ---
 
@@ -194,7 +195,7 @@ These are product-owner decisions. They set direction; the technical team retain
 ## 15. Future Roadmap (Post-MVP)
 
 1. Validate fusion on real organizational data with 2–3 design-partner teams.
-2. Ship an on-prem / air-gapped regulated pilot.
+2. Ship an on-prem / air-gapped regulated pilot. *(In progress — the air-gapped desktop app is built; see `../desktop/`.)*
 3. Add automated paper / method-change detection.
 4. Add an interactive dependency / provenance graph.
 5. Deepen parameter-rationale stress-testing beyond single-pass reasoning.

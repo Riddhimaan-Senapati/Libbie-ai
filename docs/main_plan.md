@@ -4,6 +4,8 @@
 **Relationship to the MVP:** This plan replaces the MVP's fakes with real systems, in an order where each step is independently demo-able. Nothing in the PRD is dropped; the traceability map (Section 12) covers every requirement plus the post-MVP roadmap.
 **Stance:** Take the PRD's recommendations and push them. Where the MVP fixtures the link map, here we *infer* links. Where the MVP shows a static staleness table, here we *compute* it. Where the PRD lists provenance/graph/method-detection as "roadmap," here we lay the architecture so those are increments, not rewrites. Open-source first, everywhere it's viable.
 
+**Update (2026-07) — the air-gapped path is partly realized.** The on-prem / air-gapped deployment (§4.8, Phase 2) now has a concrete implementation in **`../desktop/`**: a cross-platform **Tauri** client (Rust core + React webview) running fully local inference behind one OpenAI-compatible contract — **llama.cpp** (`llama-server`, GGUF) with **vLLM** on Linux+NVIDIA hosts — plus semantic RAG over an embedded **`sqlite-vec`** index (nomic-embed), with zero runtime network egress. Two reconciliations with the text below: (1) where this plan says "**Ollama** for laptop/desktop demos," the desktop build drives **llama.cpp directly** — Ollama was considered and rejected because its daemon/registry fights an air-gapped, pre-staged-artifacts posture; (2) the embedded **`sqlite-vec`** store (statically linked, no daemon) is the desktop's single-binary analog of the server-side pgvector/Qdrant design. See `../desktop/BUILD_SPEC.md`.
+
 ---
 
 ## 1. Vision & How This Extends the MVP
@@ -102,7 +104,7 @@ The MVP proved the experience with fixtures. This plan makes the experience *ear
 - The gateway is provider-agnostic (**LiteLLM**), so Gemini / GPT / open APIs can be swapped without code changes.
 
 **Models — local / air-gapped (PRD locked decision 5)**
-- **vLLM** (de-facto OSS serving standard; **SGLang** for prefix-heavy RAG) for the on-prem server; **Ollama** for laptop/desktop demos.
+- **vLLM** (de-facto OSS serving standard; **SGLang** for prefix-heavy RAG) for the on-prem GPU server. For laptop/desktop and non-NVIDIA hosts, **llama.cpp** (`llama-server`, GGUF) — used directly by the desktop app, not via Ollama (rejected; see the 2026-07 update above).
 - **Qwen3** (14B/30B/235B-MoE, Apache 2.0) as default; **Mistral Small 3 / Mistral Large 3** (Apache 2.0, hallucination-resistant — good for grounded RAG); **Gemma 3 27B** as a single-GPU option.
 
 **Trust / eval / observability**
@@ -154,7 +156,10 @@ Build a small **vertical ontology** of reference builds, library/dependency vers
 One action consolidates purpose, environment, dependencies, file locations, and key reasoning (with citations) into a structured artifact, rendered by **Pandoc/WeasyPrint/Typst** to **PDF** (primary, exec-shareable), **Markdown** (developer-native), and **self-contained HTML** (live citation links). Generated from live retrieval, not pre-rendered.
 
 ### 4.8 On-Prem / Air-Gapped Deployment — FR-14, NFR-5, MR-2
-A **Docker Compose** stack — Next.js app + FastAPI + Postgres/pgvector (+ optional Qdrant) + **vLLM** serving a local model + local embedder/reranker — that runs with **no external network**. Same image set as hosted; the difference is configuration (local model endpoint, no outbound calls). This is the premium, regulated-tier offering (MR-2) and the proof that no code or conversational data leaves the customer's environment (NFR-5).
+Two form factors, both zero-outbound and sold as the premium, regulated tier (MR-2), proving no code or conversational data leaves the customer's environment (NFR-5):
+
+1. **Desktop app (built — `../desktop/`).** A cross-platform **Tauri** client for single-host / workstation use. The Rust core owns the local inference engine (spawn / health-check / shutdown) behind one OpenAI-compatible contract — **llama.cpp** everywhere, **vLLM** on Linux+NVIDIA — and proxies all traffic to loopback, so the webview makes no network calls. RAG runs over an embedded **`sqlite-vec`** index (nomic-embed via `llama-server`), lexical fallback. See `../desktop/BUILD_SPEC.md`.
+2. **Server stack (planned).** A **Docker Compose** stack — Next.js app + FastAPI + Postgres/pgvector (+ optional Qdrant) + **vLLM** serving a local model + local embedder/reranker — for shared on-prem GPU hosts. Same image set as hosted; the difference is configuration (local model endpoint, no outbound calls).
 
 ### 4.9 Freemium & Tiering — MR-1, MR-2, MR-3
 Usage metering (queries/codebase-size/seats) with a visible counter and upgrade affordance (MR-3). **On-prem/air-gapped is the paid gate** (MR-2, decision 8). Auth/RBAC/org-admin are deliberately deferred (PRD non-goals) until needed for paid pilots.
@@ -208,7 +213,7 @@ Sequence these *after* the core fusion loop is real and trustworthy — they amp
 
 ## 9. Open-Source Inventory (Main Plan, at a glance)
 
-Next.js · React · TypeScript · Tailwind · shadcn/ui · Radix · Framer Motion · Shiki · CodeMirror 6 · React Flow / Cytoscape.js · Recharts / visx / D3 · TanStack · FastAPI · Pydantic · Dagster / Prefect · Celery / Redis · LlamaIndex / Haystack / R2R · DSPy · LiteLLM · rank_bm25 / Tantivy / Meilisearch / OpenSearch · sentence-transformers · bge-m3 / Qwen3-Embedding · jina-code / UniXcoder · bge-reranker / Qwen3-Reranker / ColBERT · tree-sitter · universal-ctags · PyGithub · PostgreSQL · pgvector · Qdrant · Apache AGE / Neo4j Community / Memgraph · Graphiti · vLLM / SGLang / Ollama · Qwen3 / Mistral / Gemma (Apache 2.0) · Ragas · DeepEval · Langfuse · Arize Phoenix · Pandoc / WeasyPrint / Typst · Docker / Docker Compose.
+Next.js · React · TypeScript · Tailwind · shadcn/ui · Radix · Framer Motion · Shiki · CodeMirror 6 · React Flow / Cytoscape.js · Recharts / visx / D3 · TanStack · FastAPI · Pydantic · Dagster / Prefect · Celery / Redis · LlamaIndex / Haystack / R2R · DSPy · LiteLLM · rank_bm25 / Tantivy / Meilisearch / OpenSearch · sentence-transformers · bge-m3 / Qwen3-Embedding · jina-code / UniXcoder · bge-reranker / Qwen3-Reranker / ColBERT · tree-sitter · universal-ctags · PyGithub · PostgreSQL · pgvector · Qdrant · Apache AGE / Neo4j Community / Memgraph · Graphiti · vLLM / SGLang / llama.cpp · Qwen3 / Mistral / Gemma (Apache 2.0) · Ragas · DeepEval · Langfuse · Arize Phoenix · Pandoc / WeasyPrint / Typst · Docker / Docker Compose.
 
 Non-OSS, by deliberate choice: the hosted **Claude API** (PRD locked decision 4) — and the whole stack stays runnable without it via the local model path. Vercel is an optional hosting convenience; the app is portable.
 

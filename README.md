@@ -27,7 +27,11 @@ ingestion / retrieval / linking / local-inference stack is the main plan (`docs/
 The MVP demonstrates: the dual-cited "magic moment", a technical ↔ executive view toggle,
 a risk & staleness panel, one-click handover-document export, a freemium usage counter, a
 "scanning at scale" indexing animation, and a local / air-gapped mode (a faked UI toggle in
-the MVP; wired to a real local model in the main plan).
+the web MVP).
+
+**Air-gapped desktop app (built).** The `desktop/` app makes the local path real: a Tauri
+client running fully local inference (llama.cpp today, vLLM on NVIDIA hosts) with semantic
+RAG over an embedded vector store and zero runtime network egress. See `desktop/README.md`.
 
 ## Repository layout
 
@@ -59,12 +63,30 @@ npm run build    # production build
 - `/` — public landing page (problem → fusion → how-it-works → on-prem → pricing).
 - `/demo` — the live demo (the magic moment, risk panel, handover export, local mode).
 
+### Desktop (air-gapped)
+
+```bash
+cd desktop
+npm install
+npm run app:dev     # runs the Tauri app; manages a local llama-server itself
+```
+
+Stage a GGUF model first (on a connected machine, then copy to the air-gapped host);
+full instructions and the architecture are in `desktop/README.md` and
+`desktop/BUILD_SPEC.md`. Real local inference: ask a "why" question and get a streamed,
+dual-cited answer with nothing leaving the machine.
+
 ## Stack
 
-Next.js 16 (App Router) · React 19 · TypeScript · Tailwind v4 · shadcn/ui (base-ui) ·
-motion · recharts · lucide-react. The full product additionally targets FastAPI, hybrid
-retrieval + reranking, a code↔conversation link graph, and a local model via Ollama/vLLM
-for the on-prem / air-gapped tier — see `docs/main_plan.md`.
+**Web app** (`libbie/`): Next.js 16 (App Router) · React 19 · TypeScript · Tailwind v4 ·
+shadcn/ui (base-ui) · motion · recharts · lucide-react.
+
+**Desktop app** (`desktop/`): Tauri 2 (Rust core) · React 19 · Vite · Tailwind v4 · local
+inference via **llama.cpp** (`llama-server`, GGUF) with **vLLM** on Linux+NVIDIA hosts ·
+semantic RAG over an embedded **sqlite-vec** index (nomic-embed), lexical fallback.
+
+The full server product additionally targets FastAPI, hybrid retrieval + reranking, and a
+code↔conversation link graph — see `docs/main_plan.md`.
 
 ## Hero scenario (sample data)
 
@@ -76,6 +98,10 @@ labelled as sample data in the UI.
 ## Deployment posture
 
 Hosted SaaS (frontend on Vercel, containerized backend) and a fully **on-prem / air-gapped**
-Docker Compose stack from the same images — the difference is configuration, not a fork. The
-air-gapped tier is the premium, regulated-buyer (pharma/biotech) offering: no code or
-conversational data leaves the customer's environment.
+path — the difference is configuration, not a fork. The air-gapped tier is the premium,
+regulated-buyer (pharma/biotech) offering: no code or conversational data leaves the
+customer's environment.
+
+The air-gapped tier ships two ways: the **desktop app** (`desktop/`, built) for single-host
+/ workstation use, and a server-side Docker Compose stack from the same images (planned, see
+`docs/main_plan.md`) for shared on-prem GPU hosts.
