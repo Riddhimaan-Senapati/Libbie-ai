@@ -25,7 +25,6 @@ const PHASES = [
 ] as const;
 
 const TOTAL_MS = 3800;
-const TICK_MS = 40;
 
 const KIND_STYLE: Record<
   ScanItem["kind"],

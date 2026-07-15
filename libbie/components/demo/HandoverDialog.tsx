@@ -423,10 +423,19 @@ export function HandoverDialog() {
   const [phase, setPhase] = React.useState<"generating" | "done">("generating");
   const [activeStep, setActiveStep] = React.useState(0);
 
+  // Reset to the generating state when the dialog opens (adjust state during
+  // render rather than in an effect to avoid an extra render pass).
+  const [prevOpen, setPrevOpen] = React.useState(open);
+  if (open !== prevOpen) {
+    setPrevOpen(open);
+    if (open) {
+      setPhase("generating");
+      setActiveStep(0);
+    }
+  }
+
   React.useEffect(() => {
     if (!open) return;
-    setPhase("generating");
-    setActiveStep(0);
 
     const timers: ReturnType<typeof setTimeout>[] = [];
     STEPS.forEach((_, i) => {

@@ -8,6 +8,7 @@
 mod commands;
 mod config;
 mod engine;
+mod error;
 mod inference;
 mod vecstore;
 
@@ -16,7 +17,7 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
@@ -37,16 +38,26 @@ pub fn run() {
             commands::build_index,
             commands::vector_search,
         ])
-        .build(tauri::generate_context!())
-        .expect("error while building Libbie desktop")
-        .run(|app_handle, event| {
-            // Ensure the engine child is killed when the app exits.
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                let state = app_handle.state::<AppState>();
-                let engine = state.engine.clone();
-                tauri::async_runtime::block_on(async move {
-                    engine.stop_all().await;
-                });
-            }
-        });
+        .build(tauri::generate_context!());
+
+    // A failed context build is unrecoverable (bad bundle/config), but exit with
+    // a clear message and a non-zero status rather than an opaque panic + backtrace.
+    let app = match app {
+        Ok(app) => app,
+        Err(e) => {
+            eprintln!("Libbie failed to start: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    app.run(|app_handle, event| {
+        // Ensure the engine child is killed when the app exits.
+        if let tauri::RunEvent::ExitRequested { .. } = event {
+            let state = app_handle.state::<AppState>();
+            let engine = state.engine.clone();
+            tauri::async_runtime::block_on(async move {
+                engine.stop_all().await;
+            });
+        }
+    });
 }

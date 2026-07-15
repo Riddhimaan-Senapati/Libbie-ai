@@ -17,6 +17,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
 use crate::config::{AppConfig, PreferredEngine};
+use crate::error::AppError;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -244,7 +245,7 @@ impl EngineManager {
     /// Start the chat engine per config: detect hardware, pick the engine, and
     /// dispatch to the engine-specific launcher. Both speak the same
     /// OpenAI-compatible API on `chat_port`, so the client is unchanged.
-    pub async fn start(&self, cfg: &AppConfig) -> Result<EngineStatus, String> {
+    pub async fn start(&self, cfg: &AppConfig) -> Result<EngineStatus, AppError> {
         // If something is already running, stop it first (hot model-swap).
         self.stop().await;
 
@@ -263,22 +264,22 @@ impl EngineManager {
         cfg: &AppConfig,
         hw: &HardwareInfo,
         choice: &EngineChoice,
-    ) -> Result<EngineStatus, String> {
-        let binary = cfg
-            .llama_binary
-            .clone()
-            .ok_or_else(|| "No llama-server binary configured. Set it in Settings.".to_string())?;
+    ) -> Result<EngineStatus, AppError> {
+        let binary = cfg.llama_binary.clone().ok_or_else(|| {
+            AppError::engine_not_configured(
+                "No llama-server binary configured. Set it in Settings.",
+            )
+        })?;
 
-        let model = cfg
-            .chat_model
-            .clone()
-            .ok_or_else(|| "No chat model selected. Choose a GGUF model in Settings.".to_string())?;
+        let model = cfg.chat_model.clone().ok_or_else(|| {
+            AppError::model_not_selected("No chat model selected. Choose a GGUF model in Settings.")
+        })?;
         let model_path = cfg.resolve_model(&model);
         if !model_path.is_file() {
-            return Err(format!(
+            return Err(AppError::model_not_found(format!(
                 "Model file not found: {}",
                 model_path.to_string_lossy()
-            ));
+            )));
         }
 
         let base_url = cfg.chat_base_url();
@@ -305,9 +306,9 @@ impl EngineManager {
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
 
-        let child = cmd
-            .spawn()
-            .map_err(|e| format!("Failed to launch engine '{}': {}", binary, e))?;
+        let child = cmd.spawn().map_err(|e| {
+            AppError::engine_spawn_failed(format!("Failed to launch engine '{}': {}", binary, e))
+        })?;
         let pid = child.id();
         *self.child.lock().await = Some(child);
 
@@ -341,7 +342,7 @@ impl EngineManager {
         if healthy {
             Ok(final_status)
         } else {
-            Err(final_status.message)
+            Err(AppError::engine_unhealthy(final_status.message))
         }
     }
 
@@ -352,14 +353,15 @@ impl EngineManager {
         &self,
         cfg: &AppConfig,
         choice: &EngineChoice,
-    ) -> Result<EngineStatus, String> {
+    ) -> Result<EngineStatus, AppError> {
         let binary = cfg
             .vllm_binary
             .clone()
             .unwrap_or_else(|| "vllm".to_string());
         let model = cfg.vllm_model.clone().ok_or_else(|| {
-            "No vLLM model set. Enter a HuggingFace repo id or local model path in Settings."
-                .to_string()
+            AppError::model_not_selected(
+                "No vLLM model set. Enter a HuggingFace repo id or local model path in Settings.",
+            )
         })?;
         let base_url = cfg.chat_base_url();
 
@@ -374,11 +376,11 @@ impl EngineManager {
         }
 
         let child = cmd.spawn().map_err(|e| {
-            format!(
+            AppError::engine_spawn_failed(format!(
                 "Failed to launch vLLM '{}': {}. vLLM requires Linux + NVIDIA CUDA and an \
                  installed `vllm` (pip install vllm).",
                 binary, e
-            )
+            ))
         })?;
         let pid = child.id();
         *self.child.lock().await = Some(child);
@@ -414,7 +416,7 @@ impl EngineManager {
         if healthy {
             Ok(final_status)
         } else {
-            Err(final_status.message)
+            Err(AppError::engine_unhealthy(final_status.message))
         }
     }
 
@@ -460,22 +462,25 @@ impl EngineManager {
 
     /// Start the embeddings engine: a second `llama-server` in `--embedding`
     /// mode serving the GGUF embedding model on `embed_port`.
-    pub async fn start_embed(&self, cfg: &AppConfig) -> Result<EngineStatus, String> {
+    pub async fn start_embed(&self, cfg: &AppConfig) -> Result<EngineStatus, AppError> {
         self.stop_embed().await;
 
-        let binary = cfg
-            .llama_binary
-            .clone()
-            .ok_or_else(|| "No llama-server binary configured. Set it in Settings.".to_string())?;
+        let binary = cfg.llama_binary.clone().ok_or_else(|| {
+            AppError::engine_not_configured(
+                "No llama-server binary configured. Set it in Settings.",
+            )
+        })?;
         let model = cfg.embed_model.clone().ok_or_else(|| {
-            "No embedding model selected. Choose a GGUF embedding model in Settings.".to_string()
+            AppError::model_not_selected(
+                "No embedding model selected. Choose a GGUF embedding model in Settings.",
+            )
         })?;
         let model_path = cfg.resolve_model(&model);
         if !model_path.is_file() {
-            return Err(format!(
+            return Err(AppError::model_not_found(format!(
                 "Embedding model not found: {}",
                 model_path.to_string_lossy()
-            ));
+            )));
         }
 
         let base_url = cfg.embed_base_url();
@@ -503,9 +508,12 @@ impl EngineManager {
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
 
-        let child = cmd
-            .spawn()
-            .map_err(|e| format!("Failed to launch embedding engine '{}': {}", binary, e))?;
+        let child = cmd.spawn().map_err(|e| {
+            AppError::engine_spawn_failed(format!(
+                "Failed to launch embedding engine '{}': {}",
+                binary, e
+            ))
+        })?;
         let pid = child.id();
         *self.embed_child.lock().await = Some(child);
 
@@ -539,7 +547,7 @@ impl EngineManager {
         if healthy {
             Ok(final_status)
         } else {
-            Err(final_status.message)
+            Err(AppError::engine_unhealthy(final_status.message))
         }
     }
 
@@ -575,10 +583,11 @@ mod tests {
     use crate::config::PreferredEngine;
 
     fn cfg() -> AppConfig {
-        let mut c = AppConfig::default();
-        c.vllm_binary = Some("vllm".to_string());
-        c.vllm_model = Some("Qwen/Qwen2.5-7B-Instruct".to_string());
-        c
+        AppConfig {
+            vllm_binary: Some("vllm".to_string()),
+            vllm_model: Some("Qwen/Qwen2.5-7B-Instruct".to_string()),
+            ..AppConfig::default()
+        }
     }
 
     fn hw(os: &str, nvidia: bool) -> HardwareInfo {
@@ -603,7 +612,10 @@ mod tests {
     fn auto_selects_vllm_only_on_linux_nvidia_with_binary() {
         let mut c = cfg();
         c.preferred_engine = PreferredEngine::Auto;
-        assert_eq!(choose_engine(&hw("linux", true), &c).engine, EngineKind::Vllm);
+        assert_eq!(
+            choose_engine(&hw("linux", true), &c).engine,
+            EngineKind::Vllm
+        );
     }
 
     #[test]
@@ -611,10 +623,19 @@ mod tests {
         let mut c = cfg();
         c.preferred_engine = PreferredEngine::Auto;
         // No NVIDIA → llama, even on Linux.
-        assert_eq!(choose_engine(&hw("linux", false), &c).engine, EngineKind::Llama);
+        assert_eq!(
+            choose_engine(&hw("linux", false), &c).engine,
+            EngineKind::Llama
+        );
         // NVIDIA but not Linux (Windows/macOS) → llama.
-        assert_eq!(choose_engine(&hw("windows", true), &c).engine, EngineKind::Llama);
-        assert_eq!(choose_engine(&hw("macos", true), &c).engine, EngineKind::Llama);
+        assert_eq!(
+            choose_engine(&hw("windows", true), &c).engine,
+            EngineKind::Llama
+        );
+        assert_eq!(
+            choose_engine(&hw("macos", true), &c).engine,
+            EngineKind::Llama
+        );
     }
 
     #[test]
@@ -622,7 +643,10 @@ mod tests {
         let mut c = cfg();
         c.preferred_engine = PreferredEngine::Auto;
         c.vllm_binary = None;
-        assert_eq!(choose_engine(&hw("linux", true), &c).engine, EngineKind::Llama);
+        assert_eq!(
+            choose_engine(&hw("linux", true), &c).engine,
+            EngineKind::Llama
+        );
     }
 
     #[test]
@@ -630,14 +654,20 @@ mod tests {
         let mut c = cfg();
         c.preferred_engine = PreferredEngine::Vllm;
         // Forced, but no NVIDIA → still llama (graceful).
-        assert_eq!(choose_engine(&hw("linux", false), &c).engine, EngineKind::Llama);
+        assert_eq!(
+            choose_engine(&hw("linux", false), &c).engine,
+            EngineKind::Llama
+        );
     }
 
     #[test]
     fn forcing_llama_is_always_llama() {
         let mut c = cfg();
         c.preferred_engine = PreferredEngine::Llama;
-        assert_eq!(choose_engine(&hw("linux", true), &c).engine, EngineKind::Llama);
+        assert_eq!(
+            choose_engine(&hw("linux", true), &c).engine,
+            EngineKind::Llama
+        );
     }
 
     // ---- vLLM command construction matches the documented CLI --------------
@@ -718,7 +748,10 @@ mod tests {
         };
 
         // Fake NVIDIA GPU so detect_nvidia() reports one.
-        write_exec("nvidia-smi", "#!/usr/bin/env bash\necho 'NVIDIA A10 (fake)'\n");
+        write_exec(
+            "nvidia-smi",
+            "#!/usr/bin/env bash\necho 'NVIDIA A10 (fake)'\n",
+        );
 
         // Minimal OpenAI-compatible server: /health 200 + streamed chat.
         write_exec(
@@ -752,12 +785,14 @@ mod tests {
         let old_path = std::env::var("PATH").unwrap_or_default();
         std::env::set_var("PATH", format!("{}:{}", dir.display(), old_path));
 
-        let mut cfg = AppConfig::default();
-        cfg.preferred_engine = PreferredEngine::Vllm;
-        cfg.vllm_binary = Some(vllm.to_string_lossy().to_string());
-        cfg.vllm_model = Some("fake/model".to_string());
-        cfg.host = "127.0.0.1".to_string();
-        cfg.chat_port = 51830;
+        let cfg = AppConfig {
+            preferred_engine: PreferredEngine::Vllm,
+            vllm_binary: Some(vllm.to_string_lossy().to_string()),
+            vllm_model: Some("fake/model".to_string()),
+            host: "127.0.0.1".to_string(),
+            chat_port: 51830,
+            ..AppConfig::default()
+        };
 
         // On this Linux host with the fake GPU, selection must resolve to vLLM.
         let hw = detect_hardware();

@@ -8,6 +8,8 @@
 //     over loopback, so the full experience can be developed/verified in a
 //     normal browser. This path is dev-only; the shipped app always uses IPC.
 
+import { ChatSSEParser } from "@/lib/sse";
+
 export interface AppConfig {
   llama_binary: string | null;
   vllm_binary: string | null;
@@ -75,6 +77,51 @@ export type StreamEvent =
   | { type: "token"; text: string }
   | { type: "done"; finishReason: string }
   | { type: "error"; message: string };
+
+/**
+ * The `kind` tag of a structured error returned by a Rust command (mirrors the
+ * Rust `AppError` enum in `src-tauri/src/error.rs`). Switch on this to recover
+ * programmatically — e.g. treat `vectorStoreUnavailable` as "fall back to
+ * lexical retrieval" rather than surfacing a hard error.
+ */
+export type AppErrorKind =
+  | "engineNotConfigured"
+  | "modelNotSelected"
+  | "modelNotFound"
+  | "engineSpawnFailed"
+  | "engineUnhealthy"
+  | "engineUnreachable"
+  | "engineError"
+  | "embedding"
+  | "airgapBlocked"
+  | "vectorStoreUnavailable"
+  | "vectorStore"
+  | "config"
+  | "invalidInput";
+
+/** A structured error thrown (rejected) by a Tauri command invocation. */
+export interface AppError {
+  kind: AppErrorKind;
+  message: string;
+}
+
+/** Type guard for the structured error shape crossing the IPC boundary. */
+export function isAppError(e: unknown): e is AppError {
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    "kind" in e &&
+    "message" in e &&
+    typeof (e as { message: unknown }).message === "string"
+  );
+}
+
+/** Best-effort human-readable message from any thrown command error. */
+export function errorMessage(e: unknown): string {
+  if (isAppError(e)) return e.message;
+  if (e instanceof Error) return e.message;
+  return String(e);
+}
 
 /** A KNN result row from the vector store (mirrors Rust `Hit`). */
 export interface Hit {
@@ -308,35 +355,22 @@ async function devStreamChat(
   }
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
-  let buf = "";
-  let finish = "stop";
+  const parser = new ChatSSEParser();
   for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let nl: number;
-    while ((nl = buf.indexOf("\n")) !== -1) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (!line.startsWith("data:")) continue;
-      const data = line.slice(5).trim();
-      if (data === "[DONE]") {
-        handlers.onDone(finish);
+    for (const evt of parser.push(decoder.decode(value, { stream: true }))) {
+      if (evt.type === "token") {
+        handlers.onToken(evt.text);
+      } else {
+        handlers.onDone(evt.finishReason);
         return;
-      }
-      if (!data) continue;
-      try {
-        const json = JSON.parse(data);
-        const choice = json.choices?.[0];
-        if (choice?.finish_reason) finish = choice.finish_reason;
-        const text = choice?.delta?.content;
-        if (text) handlers.onToken(text);
-      } catch {
-        /* ignore keep-alive lines */
       }
     }
   }
-  handlers.onDone(finish);
+  for (const evt of parser.end()) {
+    if (evt.type === "done") handlers.onDone(evt.finishReason);
+  }
 }
 
 // ---------------------------------------------------------------------------

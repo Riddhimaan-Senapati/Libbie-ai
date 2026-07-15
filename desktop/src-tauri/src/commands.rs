@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 
 use crate::config::{self, AppConfig};
 use crate::engine::{self, EngineChoice, EngineManager, EngineStatus, HardwareInfo};
+use crate::error::AppError;
 use crate::inference::{self, ChatMessage, ChatOptions, StreamEvent};
 use crate::vecstore::{Hit, VecStore};
 
@@ -15,17 +16,42 @@ use crate::vecstore::{Hit, VecStore};
 pub struct AppState {
     pub engine: Arc<EngineManager>,
     pub config: Mutex<AppConfig>,
-    pub vec: VecStore,
+    /// The on-disk vector index. `None` when it could not be opened (corrupt/
+    /// locked file, unwritable data dir) — the app still launches and retrieval
+    /// degrades to lexical-only rather than crashing on startup.
+    pub vec: Option<VecStore>,
 }
 
 impl AppState {
     pub fn new() -> Self {
+        let vec = match VecStore::open(config::index_db_path()) {
+            Ok(store) => Some(store),
+            Err(e) => {
+                // Non-fatal: log and continue. `vector_search`/`build_index` will
+                // report VectorStoreUnavailable so the frontend falls back to
+                // lexical retrieval (see rag.ts `retrieveVector`).
+                eprintln!(
+                    "libbie: vector index unavailable, falling back to lexical retrieval only: {}",
+                    e
+                );
+                None
+            }
+        };
         AppState {
             engine: EngineManager::new(),
             config: Mutex::new(config::load()),
-            vec: VecStore::open(config::index_db_path())
-                .expect("failed to open vector index database"),
+            vec,
         }
+    }
+
+    /// Borrow the vector store, or a typed "unavailable" error the frontend can
+    /// recognise and recover from (lexical fallback).
+    fn vec(&self) -> Result<&VecStore, AppError> {
+        self.vec.as_ref().ok_or_else(|| {
+            AppError::vector_store_unavailable(
+                "The vector index is unavailable on this host; using lexical retrieval instead.",
+            )
+        })
     }
 }
 
@@ -38,7 +64,7 @@ pub struct ModelEntry {
 }
 
 #[tauri::command]
-pub async fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
+pub async fn get_config(state: State<'_, AppState>) -> Result<AppConfig, AppError> {
     Ok(state.config.lock().await.clone())
 }
 
@@ -46,8 +72,8 @@ pub async fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String>
 pub async fn set_config(
     state: State<'_, AppState>,
     config: AppConfig,
-) -> Result<AppConfig, String> {
-    config::save(&config).map_err(|e| format!("Could not save config: {e}"))?;
+) -> Result<AppConfig, AppError> {
+    config::save(&config).map_err(|e| AppError::config(format!("Could not save config: {e}")))?;
     *state.config.lock().await = config.clone();
     Ok(config)
 }
@@ -58,31 +84,31 @@ pub fn get_hardware() -> HardwareInfo {
 }
 
 #[tauri::command]
-pub async fn get_engine_choice(state: State<'_, AppState>) -> Result<EngineChoice, String> {
+pub async fn get_engine_choice(state: State<'_, AppState>) -> Result<EngineChoice, AppError> {
     let cfg = state.config.lock().await.clone();
     Ok(engine::choose_engine(&engine::detect_hardware(), &cfg))
 }
 
 #[tauri::command]
-pub async fn engine_status(state: State<'_, AppState>) -> Result<EngineStatus, String> {
+pub async fn engine_status(state: State<'_, AppState>) -> Result<EngineStatus, AppError> {
     Ok(state.engine.status().await)
 }
 
 #[tauri::command]
-pub async fn start_engine(state: State<'_, AppState>) -> Result<EngineStatus, String> {
+pub async fn start_engine(state: State<'_, AppState>) -> Result<EngineStatus, AppError> {
     let cfg = state.config.lock().await.clone();
     state.engine.start(&cfg).await
 }
 
 #[tauri::command]
-pub async fn stop_engine(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn stop_engine(state: State<'_, AppState>) -> Result<(), AppError> {
     state.engine.stop().await;
     Ok(())
 }
 
 /// List GGUF models in the configured cache directory.
 #[tauri::command]
-pub async fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelEntry>, String> {
+pub async fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelEntry>, AppError> {
     let cfg = state.config.lock().await.clone();
     let dir = std::path::PathBuf::from(&cfg.models_dir);
     let mut out = Vec::new();
@@ -123,7 +149,7 @@ pub async fn ask_libbie(
     messages: Vec<ChatMessage>,
     options: Option<ChatOptions>,
     on_event: Channel<StreamEvent>,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let (base_url, offline) = {
         let cfg = state.config.lock().await;
         (cfg.chat_base_url(), cfg.offline_mode)
@@ -134,7 +160,9 @@ pub async fn ask_libbie(
     if let Err(e) =
         inference::stream_chat(&client, &base_url, messages, opts, offline, &on_event).await
     {
-        let _ = on_event.send(StreamEvent::Error { message: e.clone() });
+        let _ = on_event.send(StreamEvent::Error {
+            message: e.message().to_string(),
+        });
         return Err(e);
     }
     Ok(())
@@ -146,7 +174,7 @@ pub async fn ask_libbie(
 pub async fn embed_texts(
     state: State<'_, AppState>,
     inputs: Vec<String>,
-) -> Result<Vec<Vec<f32>>, String> {
+) -> Result<Vec<Vec<f32>>, AppError> {
     let (base_url, offline) = {
         let cfg = state.config.lock().await;
         (cfg.embed_base_url(), cfg.offline_mode)
@@ -158,19 +186,19 @@ pub async fn embed_texts(
 // ---- embedding engine lifecycle ------------------------------------------
 
 #[tauri::command]
-pub async fn start_embed_engine(state: State<'_, AppState>) -> Result<EngineStatus, String> {
+pub async fn start_embed_engine(state: State<'_, AppState>) -> Result<EngineStatus, AppError> {
     let cfg = state.config.lock().await.clone();
     state.engine.start_embed(&cfg).await
 }
 
 #[tauri::command]
-pub async fn stop_embed_engine(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn stop_embed_engine(state: State<'_, AppState>) -> Result<(), AppError> {
     state.engine.stop_embed().await;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn embed_engine_status(state: State<'_, AppState>) -> Result<EngineStatus, String> {
+pub async fn embed_engine_status(state: State<'_, AppState>) -> Result<EngineStatus, AppError> {
     Ok(state.engine.embed_status().await)
 }
 
@@ -195,12 +223,21 @@ pub struct IndexStatus {
 }
 
 #[tauri::command]
-pub async fn index_status(state: State<'_, AppState>) -> Result<IndexStatus, String> {
-    let count = state.vec.count();
+pub async fn index_status(state: State<'_, AppState>) -> Result<IndexStatus, AppError> {
+    // A missing store is reported as "not indexed" rather than an error, so the
+    // UI can show a clean degraded state instead of a failure.
+    let Some(vec) = state.vec.as_ref() else {
+        return Ok(IndexStatus {
+            indexed: false,
+            count: 0,
+            dim: None,
+        });
+    };
+    let count = vec.count();
     Ok(IndexStatus {
         indexed: count > 0,
         count,
-        dim: state.vec.dim(),
+        dim: vec.dim(),
     })
 }
 
@@ -210,9 +247,10 @@ pub async fn index_status(state: State<'_, AppState>) -> Result<IndexStatus, Str
 pub async fn build_index(
     state: State<'_, AppState>,
     chunks: Vec<Chunk>,
-) -> Result<IndexStatus, String> {
+) -> Result<IndexStatus, AppError> {
+    let vec = state.vec()?;
     if chunks.is_empty() {
-        return Err("No chunks to index.".to_string());
+        return Err(AppError::invalid_input("No chunks to index."));
     }
     let (base_url, offline) = {
         let cfg = state.config.lock().await;
@@ -229,7 +267,9 @@ pub async fn build_index(
             .collect();
         let vecs = inference::embed(&client, &base_url, inputs, offline).await?;
         if vecs.len() != batch.len() {
-            return Err("Embedding engine returned the wrong number of vectors.".to_string());
+            return Err(AppError::embedding(
+                "Embedding engine returned the wrong number of vectors.",
+            ));
         }
         embeddings.extend(vecs);
     }
@@ -238,11 +278,11 @@ pub async fn build_index(
         .first()
         .map(|v| v.len())
         .filter(|d| *d > 0)
-        .ok_or_else(|| "Embedding engine returned empty vectors.".to_string())?;
+        .ok_or_else(|| AppError::embedding("Embedding engine returned empty vectors."))?;
 
-    state.vec.reset(dim)?;
+    vec.reset(dim)?;
     for (i, (c, emb)) in chunks.iter().zip(embeddings.iter()).enumerate() {
-        state.vec.insert(
+        vec.insert(
             i as i64 + 1,
             emb,
             c.path.as_deref().unwrap_or(""),
@@ -267,7 +307,8 @@ pub async fn vector_search(
     query: String,
     k: usize,
     kind: Option<String>,
-) -> Result<Vec<Hit>, String> {
+) -> Result<Vec<Hit>, AppError> {
+    let store = state.vec()?;
     let (base_url, offline) = {
         let cfg = state.config.lock().await;
         (cfg.embed_base_url(), cfg.offline_mode)
@@ -278,6 +319,6 @@ pub async fn vector_search(
     let emb = vecs
         .into_iter()
         .next()
-        .ok_or_else(|| "No query embedding returned.".to_string())?;
-    state.vec.knn(&emb, k, kind.as_deref())
+        .ok_or_else(|| AppError::embedding("No query embedding returned."))?;
+    store.knn(&emb, k, kind.as_deref())
 }
