@@ -107,14 +107,27 @@ export function CodeCitationPanel({
   const [activeIdx, setActiveIdx] = React.useState(0);
   const [scrollKey, setScrollKey] = React.useState(0);
 
-  React.useEffect(() => {
+  // Reset to the first citation whenever the set of citations changes, and jump
+  // to a parent-requested focus index — both handled by adjusting state during
+  // render rather than in an effect to avoid extra render passes.
+  const [prevCitations, setPrevCitations] = React.useState(citations);
+  if (citations !== prevCitations) {
+    setPrevCitations(citations);
     setActiveIdx(0);
-  }, [citations]);
+  }
 
-  React.useEffect(() => {
+  const [prevFocusIndex, setPrevFocusIndex] = React.useState(focusIndex);
+  if (focusIndex !== prevFocusIndex) {
+    setPrevFocusIndex(focusIndex);
     if (focusIndex != null && focusIndex >= 0 && focusIndex < citations.length) {
       setActiveIdx(focusIndex);
       setScrollKey((k) => k + 1);
+    }
+  }
+
+  // Acknowledge the parent's focus request once it has been applied.
+  React.useEffect(() => {
+    if (focusIndex != null && focusIndex >= 0 && focusIndex < citations.length) {
       onFocusHandled?.();
     }
   }, [focusIndex, citations.length, onFocusHandled]);

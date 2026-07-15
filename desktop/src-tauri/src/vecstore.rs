@@ -8,7 +8,9 @@ use rusqlite::{ffi::sqlite3_auto_extension, params, Connection};
 use serde::Serialize;
 use sqlite_vec::sqlite3_vec_init;
 use std::path::PathBuf;
-use std::sync::{Mutex, Once};
+use std::sync::{Mutex, MutexGuard, Once};
+
+use crate::error::AppError;
 
 static INIT: Once = Once::new();
 
@@ -30,6 +32,15 @@ pub struct Hit {
 
 pub struct VecStore {
     conn: Mutex<Connection>,
+}
+
+/// Lock the connection, recovering the guard if a previous holder panicked.
+///
+/// The connection is a plain SQLite handle with no cross-call invariant that a
+/// panic could corrupt, so treating a `PoisonError` as recoverable (rather than
+/// propagating a panic) keeps retrieval working after an unrelated hiccup.
+fn lock_conn(m: &Mutex<Connection>) -> MutexGuard<'_, Connection> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn to_le_bytes(v: &[f32]) -> Vec<u8> {
@@ -54,37 +65,45 @@ fn normalize(v: &[f32]) -> Vec<f32> {
 /// Register the sqlite-vec extension exactly once for every future connection.
 fn ensure_extension() {
     INIT.call_once(|| unsafe {
-        sqlite3_auto_extension(Some(std::mem::transmute(
-            sqlite3_vec_init as *const (),
-        )));
+        // Standard sqlite-vec registration idiom: cast the init fn to the
+        // extension entry-point signature sqlite3 expects.
+        #[allow(clippy::missing_transmute_annotations)]
+        sqlite3_auto_extension(Some(std::mem::transmute(sqlite3_vec_init as *const ())));
     });
 }
 
 impl VecStore {
     /// Open (creating if needed) an on-disk index database.
-    pub fn open(db_path: PathBuf) -> Result<Self, String> {
+    pub fn open(db_path: PathBuf) -> Result<Self, AppError> {
         ensure_extension();
         if let Some(parent) = db_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent).map_err(|e| {
+                AppError::vector_store(format!(
+                    "Could not create index directory {}: {e}",
+                    parent.to_string_lossy()
+                ))
+            })?;
         }
-        let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
+        let conn = Connection::open(&db_path)
+            .map_err(|e| AppError::vector_store(format!("Could not open vector index: {e}")))?;
         conn.execute_batch(
             "create table if not exists libbie_meta(key text primary key, value text);",
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| AppError::vector_store(e.to_string()))?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
     }
 
     #[cfg(test)]
-    pub fn open_in_memory() -> Result<Self, String> {
+    pub fn open_in_memory() -> Result<Self, AppError> {
         ensure_extension();
-        let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
+        let conn =
+            Connection::open_in_memory().map_err(|e| AppError::vector_store(e.to_string()))?;
         conn.execute_batch(
             "create table if not exists libbie_meta(key text primary key, value text);",
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| AppError::vector_store(e.to_string()))?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -92,29 +111,27 @@ impl VecStore {
 
     /// Embedding dimension of the current index, if built.
     pub fn dim(&self) -> Option<usize> {
-        let conn = self.conn.lock().unwrap();
-        conn.query_row(
-            "select value from libbie_meta where key='dim'",
-            [],
-            |r| r.get::<_, String>(0),
-        )
+        let conn = lock_conn(&self.conn);
+        conn.query_row("select value from libbie_meta where key='dim'", [], |r| {
+            r.get::<_, String>(0)
+        })
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
     }
 
     /// Number of indexed chunks (0 if not built).
     pub fn count(&self) -> i64 {
-        let conn = self.conn.lock().unwrap();
+        let conn = lock_conn(&self.conn);
         conn.query_row("select count(*) from chunks", [], |r| r.get(0))
             .unwrap_or(0)
     }
 
     /// (Re)create the vec0 table for a given embedding dimension, clearing any
     /// prior index. Called at the start of a corpus (re)index.
-    pub fn reset(&self, dim: usize) -> Result<(), String> {
-        let conn = self.conn.lock().unwrap();
+    pub fn reset(&self, dim: usize) -> Result<(), AppError> {
+        let conn = lock_conn(&self.conn);
         conn.execute_batch("drop table if exists chunks;")
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| AppError::vector_store(e.to_string()))?;
         conn.execute_batch(&format!(
             "create virtual table chunks using vec0(
                 id integer primary key,
@@ -125,12 +142,12 @@ impl VecStore {
                 conv_id text
             );"
         ))
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| AppError::vector_store(e.to_string()))?;
         conn.execute(
             "insert or replace into libbie_meta(key,value) values('dim',?1)",
             params![dim.to_string()],
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| AppError::vector_store(e.to_string()))?;
         Ok(())
     }
 
@@ -144,23 +161,23 @@ impl VecStore {
         kind: &str,
         line_start: i64,
         conv_id: &str,
-    ) -> Result<(), String> {
+    ) -> Result<(), AppError> {
         let bytes = to_le_bytes(&normalize(embedding));
-        let conn = self.conn.lock().unwrap();
+        let conn = lock_conn(&self.conn);
         conn.execute(
             "insert into chunks(id, embedding, path, kind, line_start, conv_id)
              values (?1, ?2, ?3, ?4, ?5, ?6)",
             params![id, bytes, path, kind, line_start, conv_id],
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| AppError::vector_store(e.to_string()))?;
         Ok(())
     }
 
     /// K-nearest-neighbour search, optionally constrained to a `kind`
     /// ("code" | "conversation").
-    pub fn knn(&self, query: &[f32], k: usize, kind: Option<&str>) -> Result<Vec<Hit>, String> {
+    pub fn knn(&self, query: &[f32], k: usize, kind: Option<&str>) -> Result<Vec<Hit>, AppError> {
         let bytes = to_le_bytes(&normalize(query));
-        let conn = self.conn.lock().unwrap();
+        let conn = lock_conn(&self.conn);
 
         let map = |row: &rusqlite::Row| -> rusqlite::Result<Hit> {
             let distance: f64 = row.get(5)?;
@@ -183,12 +200,12 @@ impl VecStore {
                      from chunks
                      where embedding match ?1 and k = ?2 and kind = ?3",
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| AppError::vector_store(e.to_string()))?;
             let rows = stmt
                 .query_map(params![bytes, k as i64, kd], map)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| AppError::vector_store(e.to_string()))?;
             for r in rows {
-                out.push(r.map_err(|e| e.to_string())?);
+                out.push(r.map_err(|e| AppError::vector_store(e.to_string()))?);
             }
         } else {
             let mut stmt = conn
@@ -197,12 +214,12 @@ impl VecStore {
                      from chunks
                      where embedding match ?1 and k = ?2",
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| AppError::vector_store(e.to_string()))?;
             let rows = stmt
                 .query_map(params![bytes, k as i64], map)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| AppError::vector_store(e.to_string()))?;
             for r in rows {
-                out.push(r.map_err(|e| e.to_string())?);
+                out.push(r.map_err(|e| AppError::vector_store(e.to_string()))?);
             }
         }
         Ok(out)

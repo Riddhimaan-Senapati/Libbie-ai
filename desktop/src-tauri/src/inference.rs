@@ -9,6 +9,8 @@ use tauri::ipc::Channel;
 
 use futures_util::StreamExt;
 
+use crate::error::AppError;
+
 /// One chat message in the OpenAI schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -60,16 +62,16 @@ pub enum StreamEvent {
 }
 
 /// Assert the destination is loopback before any request when offline mode is on.
-pub fn assert_loopback(base_url: &str) -> Result<(), String> {
+pub fn assert_loopback(base_url: &str) -> Result<(), AppError> {
     let ok = base_url.contains("127.0.0.1")
         || base_url.contains("localhost")
         || base_url.contains("[::1]");
     if ok {
         Ok(())
     } else {
-        Err(format!(
+        Err(AppError::airgap_blocked(format!(
             "Air-gapped mode blocked a non-loopback request to {base_url}"
-        ))
+        )))
     }
 }
 
@@ -81,7 +83,7 @@ pub async fn stream_chat(
     opts: ChatOptions,
     offline: bool,
     channel: &Channel<StreamEvent>,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     if offline {
         assert_loopback(base_url)?;
     }
@@ -96,17 +98,16 @@ pub async fn stream_chat(
         "stream": true,
     });
 
-    let resp = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Could not reach the local engine: {e}"))?;
+    let resp = client.post(&url).json(&body).send().await.map_err(|e| {
+        AppError::engine_unreachable(format!("Could not reach the local engine: {e}"))
+    })?;
 
     if !resp.status().is_success() {
         let code = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Engine returned {code}: {text}"));
+        return Err(AppError::engine_error(format!(
+            "Engine returned {code}: {text}"
+        )));
     }
 
     // Parse Server-Sent Events: lines beginning with "data: ".
@@ -115,7 +116,7 @@ pub async fn stream_chat(
     let mut finish_reason = "stop".to_string();
 
     while let Some(chunk) = stream.next().await {
-        let bytes = chunk.map_err(|e| format!("Stream error: {e}"))?;
+        let bytes = chunk.map_err(|e| AppError::engine_error(format!("Stream error: {e}")))?;
         buf.push_str(&String::from_utf8_lossy(&bytes));
 
         // Process complete lines; keep the trailing partial in `buf`.
@@ -167,27 +168,26 @@ pub async fn embed(
     base_url: &str,
     inputs: Vec<String>,
     offline: bool,
-) -> Result<Vec<Vec<f32>>, String> {
+) -> Result<Vec<Vec<f32>>, AppError> {
     if offline {
         assert_loopback(base_url)?;
     }
     let url = format!("{}/v1/embeddings", base_url);
     let body = serde_json::json!({ "model": "local", "input": inputs });
-    let resp = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Could not reach the embedding engine: {e}"))?;
+    let resp = client.post(&url).json(&body).send().await.map_err(|e| {
+        AppError::engine_unreachable(format!("Could not reach the embedding engine: {e}"))
+    })?;
     if !resp.status().is_success() {
         let code = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Embedding engine returned {code}: {text}"));
+        return Err(AppError::engine_error(format!(
+            "Embedding engine returned {code}: {text}"
+        )));
     }
     let json: serde_json::Value = resp
         .json()
         .await
-        .map_err(|e| format!("Bad embedding response: {e}"))?;
+        .map_err(|e| AppError::embedding(format!("Bad embedding response: {e}")))?;
     let mut out = Vec::new();
     if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
         for item in data {
