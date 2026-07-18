@@ -48,6 +48,39 @@ function Field({
 const inputCls =
   "w-full rounded-lg border border-input bg-background px-3 py-2 text-[13px] text-foreground outline-none transition-colors focus:border-primary";
 
+/** A GGUF-model dropdown that keeps the current selection visible even when it
+ *  isn't in the folder listing. Shared by the chat and embedding model pickers. */
+function ModelSelect({
+  value,
+  placeholder,
+  models,
+  onChange,
+}: {
+  value: string | null;
+  placeholder: string;
+  models: ModelEntry[];
+  onChange: (v: string | null) => void;
+}) {
+  return (
+    <select
+      className={inputCls}
+      value={value ?? ""}
+      onChange={(e) => onChange(e.target.value || null)}
+    >
+      <option value="">{placeholder}</option>
+      {models.map((m) => (
+        <option key={m.path} value={m.name}>
+          {m.name}
+          {m.size_mb ? ` (${m.size_mb} MB)` : ""}
+        </option>
+      ))}
+      {value && !models.some((m) => m.name === value) && (
+        <option value={value}>{value}</option>
+      )}
+    </select>
+  );
+}
+
 export function Settings({
   config,
   status,
@@ -409,23 +442,12 @@ export function Settings({
 
           <Field label="Chat model (GGUF)">
             <div className="flex gap-2">
-              <select
-                className={inputCls}
-                value={draft.chat_model ?? ""}
-                onChange={(e) => set("chat_model", e.target.value || null)}
-              >
-                <option value="">— select a model —</option>
-                {models.map((m) => (
-                  <option key={m.path} value={m.name}>
-                    {m.name}
-                    {m.size_mb ? ` (${m.size_mb} MB)` : ""}
-                  </option>
-                ))}
-                {/* keep current selection visible even if not in the folder listing */}
-                {draft.chat_model && !models.some((m) => m.name === draft.chat_model) && (
-                  <option value={draft.chat_model}>{draft.chat_model}</option>
-                )}
-              </select>
+              <ModelSelect
+                value={draft.chat_model}
+                placeholder="— select a model —"
+                models={models}
+                onChange={(v) => set("chat_model", v)}
+              />
               <button
                 type="button"
                 onClick={onRefreshModels}
@@ -605,22 +627,12 @@ export function Settings({
 
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Embedding model (GGUF)" hint="e.g. nomic-embed-text (768-dim).">
-            <select
-              className={inputCls}
-              value={draft.embed_model ?? ""}
-              onChange={(e) => set("embed_model", e.target.value || null)}
-            >
-              <option value="">— select an embedding model —</option>
-              {models.map((m) => (
-                <option key={m.path} value={m.name}>
-                  {m.name}
-                  {m.size_mb ? ` (${m.size_mb} MB)` : ""}
-                </option>
-              ))}
-              {draft.embed_model && !models.some((m) => m.name === draft.embed_model) && (
-                <option value={draft.embed_model}>{draft.embed_model}</option>
-              )}
-            </select>
+            <ModelSelect
+              value={draft.embed_model}
+              placeholder="— select an embedding model —"
+              models={models}
+              onChange={(v) => set("embed_model", v)}
+            />
           </Field>
 
           <div className="flex items-end gap-2">

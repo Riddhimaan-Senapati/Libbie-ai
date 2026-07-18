@@ -114,6 +114,12 @@ export interface IndexStatus {
 export const isTauri = (): boolean =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+/** Lazy-import the Tauri IPC bridge and invoke a command (app runtime only). */
+async function ipc<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<T>(cmd, args);
+}
+
 // Dev-mode default endpoint (matches AppConfig defaults).
 const DEV_BASE_URL = "http://127.0.0.1:51820";
 
@@ -156,18 +162,12 @@ function devConfig(): AppConfig {
 }
 
 export async function getConfig(): Promise<AppConfig> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<AppConfig>("get_config");
-  }
+  if (isTauri()) return ipc<AppConfig>("get_config");
   return devConfig();
 }
 
 export async function setConfig(config: AppConfig): Promise<AppConfig> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<AppConfig>("set_config", { config });
-  }
+  if (isTauri()) return ipc<AppConfig>("set_config", { config });
   localStorage.setItem(DEV_CONFIG_KEY, JSON.stringify(config));
   return config;
 }
@@ -177,10 +177,7 @@ export async function setConfig(config: AppConfig): Promise<AppConfig> {
 // ---------------------------------------------------------------------------
 
 export async function getHardware(): Promise<HardwareInfo> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<HardwareInfo>("get_hardware");
-  }
+  if (isTauri()) return ipc<HardwareInfo>("get_hardware");
   return {
     os: "browser",
     arch: navigator.userAgent.includes("Win") ? "x86_64" : "unknown",
@@ -193,21 +190,21 @@ export async function getHardware(): Promise<HardwareInfo> {
 }
 
 export async function getEngineChoice(): Promise<EngineChoice> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<EngineChoice>("get_engine_choice");
-  }
+  if (isTauri()) return ipc<EngineChoice>("get_engine_choice");
   return { engine: "llama", reason: "Browser dev: external llama-server." };
 }
 
-export async function engineStatus(): Promise<EngineStatus> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<EngineStatus>("engine_status");
-  }
-  // Dev: probe the external server's health directly.
+/**
+ * Dev-only: probe a loopback engine's `/health` and report an `EngineStatus`.
+ * Used by both the chat and embedding engine status fallbacks.
+ */
+async function devEngineStatus(
+  port: number,
+  model: string | null,
+  msg: { ready: string; down: string; unreachable: string },
+): Promise<EngineStatus> {
   const cfg = devConfig();
-  const base = `http://${cfg.host}:${cfg.chat_port}`;
+  const base = `http://${cfg.host}:${port}`;
   try {
     const r = await fetch(`${base}/health`);
     const healthy = r.ok && (await r.text()).includes("ok");
@@ -215,10 +212,10 @@ export async function engineStatus(): Promise<EngineStatus> {
       running: healthy,
       healthy,
       engine: "llama",
-      model: cfg.chat_model,
+      model,
       base_url: base,
       pid: null,
-      message: healthy ? "External llama-server ready (dev)" : "No engine on loopback",
+      message: healthy ? msg.ready : msg.down,
     };
   } catch {
     return {
@@ -228,33 +225,34 @@ export async function engineStatus(): Promise<EngineStatus> {
       model: null,
       base_url: base,
       pid: null,
-      message: "No engine reachable on loopback",
+      message: msg.unreachable,
     };
   }
 }
 
+export async function engineStatus(): Promise<EngineStatus> {
+  if (isTauri()) return ipc<EngineStatus>("engine_status");
+  // Dev: probe the external server's health directly.
+  const cfg = devConfig();
+  return devEngineStatus(cfg.chat_port, cfg.chat_model, {
+    ready: "External llama-server ready (dev)",
+    down: "No engine on loopback",
+    unreachable: "No engine reachable on loopback",
+  });
+}
+
 export async function startEngine(): Promise<EngineStatus> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<EngineStatus>("start_engine");
-  }
+  if (isTauri()) return ipc<EngineStatus>("start_engine");
   // Dev: the server is managed outside the browser; just report status.
   return engineStatus();
 }
 
 export async function stopEngine(): Promise<void> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("stop_engine");
-    return;
-  }
+  if (isTauri()) await ipc<void>("stop_engine");
 }
 
 export async function listModels(): Promise<ModelEntry[]> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<ModelEntry[]>("list_models");
-  }
+  if (isTauri()) return ipc<ModelEntry[]>("list_models");
   const cfg = devConfig();
   return cfg.chat_model
     ? [{ name: cfg.chat_model, path: cfg.chat_model, size_mb: 0 }]
@@ -361,20 +359,8 @@ async function devStreamChat(
 // ---------------------------------------------------------------------------
 
 export async function embedTexts(inputs: string[]): Promise<number[][]> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<number[][]>("embed_texts", { inputs });
-  }
-  const cfg = devConfig();
-  const url = `http://${cfg.host}:${cfg.embed_port}/v1/embeddings`;
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "local", input: inputs }),
-  });
-  if (!r.ok) throw new Error(`Embedding engine returned ${r.status}`);
-  const json = await r.json();
-  return (json.data ?? []).map((d: { embedding: number[] }) => d.embedding);
+  if (isTauri()) return ipc<number[][]>("embed_texts", { inputs });
+  return devEmbedBatch(inputs);
 }
 
 // ---------------------------------------------------------------------------
@@ -382,50 +368,22 @@ export async function embedTexts(inputs: string[]): Promise<number[][]> {
 // ---------------------------------------------------------------------------
 
 export async function startEmbedEngine(): Promise<EngineStatus> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<EngineStatus>("start_embed_engine");
-  }
+  if (isTauri()) return ipc<EngineStatus>("start_embed_engine");
   return embedEngineStatus();
 }
 
 export async function stopEmbedEngine(): Promise<void> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("stop_embed_engine");
-  }
+  if (isTauri()) await ipc<void>("stop_embed_engine");
 }
 
 export async function embedEngineStatus(): Promise<EngineStatus> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<EngineStatus>("embed_engine_status");
-  }
+  if (isTauri()) return ipc<EngineStatus>("embed_engine_status");
   const cfg = devConfig();
-  const base = `http://${cfg.host}:${cfg.embed_port}`;
-  try {
-    const r = await fetch(`${base}/health`);
-    const healthy = r.ok && (await r.text()).includes("ok");
-    return {
-      running: healthy,
-      healthy,
-      engine: "llama",
-      model: cfg.embed_model,
-      base_url: base,
-      pid: null,
-      message: healthy ? "Embeddings ready (dev)" : "No embedding engine on loopback",
-    };
-  } catch {
-    return {
-      running: false,
-      healthy: false,
-      engine: null,
-      model: null,
-      base_url: base,
-      pid: null,
-      message: "No embedding engine reachable",
-    };
-  }
+  return devEngineStatus(cfg.embed_port, cfg.embed_model, {
+    ready: "Embeddings ready (dev)",
+    down: "No embedding engine on loopback",
+    unreachable: "No embedding engine reachable",
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -462,10 +420,7 @@ async function devEmbedBatch(texts: string[]): Promise<number[][]> {
 }
 
 export async function indexStatus(): Promise<IndexStatus> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<IndexStatus>("index_status");
-  }
+  if (isTauri()) return ipc<IndexStatus>("index_status");
   return {
     indexed: devIndex.length > 0,
     count: devIndex.length,
@@ -474,10 +429,7 @@ export async function indexStatus(): Promise<IndexStatus> {
 }
 
 export async function buildIndex(chunks: Chunk[]): Promise<IndexStatus> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<IndexStatus>("build_index", { chunks });
-  }
+  if (isTauri()) return ipc<IndexStatus>("build_index", { chunks });
   // Dev: embed each chunk (prefixed for nomic) and keep an in-memory index.
   devIndex.length = 0;
   for (let i = 0; i < chunks.length; i += 16) {
@@ -499,10 +451,7 @@ export async function vectorSearch(
   k: number,
   kind?: string,
 ): Promise<Hit[]> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<Hit[]>("vector_search", { query, k, kind: kind ?? null });
-  }
+  if (isTauri()) return ipc<Hit[]>("vector_search", { query, k, kind: kind ?? null });
   // Dev: embed the query, cosine over the in-memory index.
   const [q] = await devEmbedBatch([`search_query: ${query}`]);
   if (!q) return [];
@@ -550,8 +499,7 @@ export async function listHfGguf(
   token?: string,
 ): Promise<HfFile[]> {
   if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<HfFile[]>("list_hf_gguf", {
+    return ipc<HfFile[]>("list_hf_gguf", {
       repo,
       revision: revision ?? null,
       token: token ?? null,

@@ -83,6 +83,25 @@ pub fn assert_loopback(base_url: &str) -> Result<(), String> {
     }
 }
 
+/// Attach `Authorization: Bearer <key>` when the target carries an API key.
+fn with_bearer(req: reqwest::RequestBuilder, key: &Option<String>) -> reqwest::RequestBuilder {
+    match key {
+        Some(k) => req.bearer_auth(k),
+        None => req,
+    }
+}
+
+/// Pass the response through when it is 2xx; otherwise fail with the body text.
+async fn ensure_success(resp: reqwest::Response, what: &str) -> Result<reqwest::Response, String> {
+    if resp.status().is_success() {
+        Ok(resp)
+    } else {
+        let code = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        Err(format!("{what} returned {code}: {text}"))
+    }
+}
+
 /// Build the provider-specific POST (URL, auth, body) for a streamed chat.
 fn chat_request(
     client: &reqwest::Client,
@@ -133,13 +152,10 @@ fn chat_request(
             "max_tokens": opts.max_tokens,
             "stream": true,
         });
-        let mut req = client
+        let req = client
             .post(format!("{}/chat/completions", target.base_url))
             .json(&body);
-        if let Some(key) = &target.api_key {
-            req = req.bearer_auth(key);
-        }
-        req
+        with_bearer(req, &target.api_key)
     }
 }
 
@@ -163,12 +179,7 @@ pub async fn stream_chat(
         .send()
         .await
         .map_err(|e| format!("Could not reach the model provider: {e}"))?;
-
-    if !resp.status().is_success() {
-        let code = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Provider returned {code}: {text}"));
-    }
+    let resp = ensure_success(resp, "Provider").await?;
 
     let anthropic = target.anthropic;
     let mut buf = String::new();
@@ -263,21 +274,14 @@ pub async fn embed(
     if target.is_local {
         assert_loopback(&target.base_url)?;
     }
-    let mut req = client
+    let req = client
         .post(format!("{}/embeddings", target.base_url))
         .json(&json!({ "model": target.model, "input": inputs }));
-    if let Some(key) = &target.api_key {
-        req = req.bearer_auth(key);
-    }
-    let resp = req
+    let resp = with_bearer(req, &target.api_key)
         .send()
         .await
         .map_err(|e| format!("Could not reach the embedding provider: {e}"))?;
-    if !resp.status().is_success() {
-        let code = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Embedding provider returned {code}: {text}"));
-    }
+    let resp = ensure_success(resp, "Embedding provider").await?;
     let json: Value = resp
         .json()
         .await

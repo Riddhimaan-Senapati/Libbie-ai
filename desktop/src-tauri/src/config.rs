@@ -169,25 +169,24 @@ impl AppConfig {
         }
     }
 
+    /// An OpenAI-compatible cloud target (base URL + key), for a given model.
+    fn openai_target(&self, model: String) -> ProviderTarget {
+        ProviderTarget {
+            anthropic: false,
+            base_url: self.openai_base_url.trim_end_matches('/').to_string(),
+            api_key: self.openai_api_key.clone(),
+            model,
+            is_local: false,
+        }
+    }
+
     /// Resolve the active chat destination from the selected provider.
     pub fn chat_target(&self) -> ProviderTarget {
         match self.chat_provider {
-            ChatProvider::Local => ProviderTarget {
-                anthropic: false,
-                // OpenAI-compatible base URLs include the /v1 prefix; local
-                // engines serve it too, so append it for a uniform endpoint path.
-                base_url: format!("{}/v1", self.chat_base_url()),
-                api_key: None,
-                model: "local".to_string(),
-                is_local: true,
-            },
-            ChatProvider::OpenaiCompatible => ProviderTarget {
-                anthropic: false,
-                base_url: self.openai_base_url.trim_end_matches('/').to_string(),
-                api_key: self.openai_api_key.clone(),
-                model: self.openai_model.clone(),
-                is_local: false,
-            },
+            // OpenAI-compatible base URLs include the /v1 prefix; local engines
+            // serve it too, so append it for a uniform endpoint path.
+            ChatProvider::Local => local_target(format!("{}/v1", self.chat_base_url())),
+            ChatProvider::OpenaiCompatible => self.openai_target(self.openai_model.clone()),
             ChatProvider::Anthropic => ProviderTarget {
                 anthropic: true,
                 base_url: self.anthropic_base_url.trim_end_matches('/').to_string(),
@@ -203,21 +202,9 @@ impl AppConfig {
     /// and Anthropic both fall back to the local embedding engine.
     pub fn embed_target(&self) -> ProviderTarget {
         if self.chat_provider == ChatProvider::OpenaiCompatible {
-            ProviderTarget {
-                anthropic: false,
-                base_url: self.openai_base_url.trim_end_matches('/').to_string(),
-                api_key: self.openai_api_key.clone(),
-                model: self.openai_embed_model.clone(),
-                is_local: false,
-            }
+            self.openai_target(self.openai_embed_model.clone())
         } else {
-            ProviderTarget {
-                anthropic: false,
-                base_url: format!("{}/v1", self.embed_base_url()),
-                api_key: None,
-                model: "local".to_string(),
-                is_local: true,
-            }
+            local_target(format!("{}/v1", self.embed_base_url()))
         }
     }
 
@@ -248,6 +235,17 @@ impl AppConfig {
             ChatProvider::Local => {}
         }
         Ok(())
+    }
+}
+
+/// A loopback-enforced local target (no key, OpenAI wire) at `base_url`.
+fn local_target(base_url: String) -> ProviderTarget {
+    ProviderTarget {
+        anthropic: false,
+        base_url,
+        api_key: None,
+        model: "local".to_string(),
+        is_local: true,
     }
 }
 

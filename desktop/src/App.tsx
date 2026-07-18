@@ -55,15 +55,7 @@ export default function App() {
 
   // engine + config
   const [config, setConfig] = React.useState<AppConfig | null>(null);
-  const [status, setStatus] = React.useState<EngineStatus>({
-    running: false,
-    healthy: false,
-    engine: null,
-    model: null,
-    base_url: null,
-    pid: null,
-    message: "Engine stopped",
-  });
+  const [status, setStatus] = React.useState<EngineStatus>(DEFAULT_ENGINE_STATUS);
   const [hardware, setHardware] = React.useState<HardwareInfo | null>(null);
   const [choice, setChoice] = React.useState<EngineChoice | null>(null);
   const [models, setModels] = React.useState<ModelEntry[]>([]);
