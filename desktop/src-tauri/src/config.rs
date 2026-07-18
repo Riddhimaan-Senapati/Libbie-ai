@@ -26,6 +26,36 @@ impl Default for PreferredEngine {
     }
 }
 
+/// Where chat completions come from.
+///   * `Local`            — a llama.cpp / vLLM server this app manages on loopback.
+///   * `OpenaiCompatible` — any OpenAI-compatible endpoint (OpenAI, Groq, Together,
+///                          Mistral, OpenRouter, a self-hosted vLLM, …) via base URL + key.
+///   * `Anthropic`        — the Anthropic Messages API natively.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatProvider {
+    Local,
+    OpenaiCompatible,
+    Anthropic,
+}
+
+impl Default for ChatProvider {
+    fn default() -> Self {
+        ChatProvider::Local
+    }
+}
+
+/// A resolved chat/embedding destination: everything a request needs, with no
+/// knowledge of which provider the user picked.
+#[derive(Debug, Clone)]
+pub struct ProviderTarget {
+    pub anthropic: bool,          // true => Anthropic wire format; false => OpenAI-compatible
+    pub base_url: String,         // no trailing slash
+    pub api_key: Option<String>,
+    pub model: String,
+    pub is_local: bool,           // true => loopback-enforced (air-gap)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -68,6 +98,20 @@ pub struct AppConfig {
     pub vllm_quantization: Option<String>,
     /// Weights dtype (`--dtype`): "auto" | "half" | "bfloat16" | "float16" | "float32".
     pub vllm_dtype: String,
+
+    // ---- cloud providers (used only when offline_mode is off) --------------
+    /// Which chat backend to use. `Local` keeps the strict air-gap.
+    pub chat_provider: ChatProvider,
+    /// OpenAI-compatible endpoint (OpenAI, Groq, Together, Mistral, OpenRouter, …).
+    pub openai_base_url: String,
+    pub openai_api_key: Option<String>,
+    pub openai_model: String,
+    /// Embedding model for the OpenAI-compatible endpoint (for cloud RAG).
+    pub openai_embed_model: String,
+    /// Anthropic Messages API.
+    pub anthropic_base_url: String,
+    pub anthropic_api_key: Option<String>,
+    pub anthropic_model: String,
 }
 
 impl Default for AppConfig {
@@ -90,6 +134,14 @@ impl Default for AppConfig {
             vllm_max_model_len: None,
             vllm_quantization: None,
             vllm_dtype: "auto".to_string(),
+            chat_provider: ChatProvider::Local,
+            openai_base_url: "https://api.openai.com/v1".to_string(),
+            openai_api_key: None,
+            openai_model: "gpt-4o-mini".to_string(),
+            openai_embed_model: "text-embedding-3-small".to_string(),
+            anthropic_base_url: "https://api.anthropic.com".to_string(),
+            anthropic_api_key: None,
+            anthropic_model: "claude-sonnet-5".to_string(),
         }
     }
 }
@@ -117,11 +169,63 @@ impl AppConfig {
         }
     }
 
+    /// Resolve the active chat destination from the selected provider.
+    pub fn chat_target(&self) -> ProviderTarget {
+        match self.chat_provider {
+            ChatProvider::Local => ProviderTarget {
+                anthropic: false,
+                // OpenAI-compatible base URLs include the /v1 prefix; local
+                // engines serve it too, so append it for a uniform endpoint path.
+                base_url: format!("{}/v1", self.chat_base_url()),
+                api_key: None,
+                model: "local".to_string(),
+                is_local: true,
+            },
+            ChatProvider::OpenaiCompatible => ProviderTarget {
+                anthropic: false,
+                base_url: self.openai_base_url.trim_end_matches('/').to_string(),
+                api_key: self.openai_api_key.clone(),
+                model: self.openai_model.clone(),
+                is_local: false,
+            },
+            ChatProvider::Anthropic => ProviderTarget {
+                anthropic: true,
+                base_url: self.anthropic_base_url.trim_end_matches('/').to_string(),
+                api_key: self.anthropic_api_key.clone(),
+                model: self.anthropic_model.clone(),
+                is_local: false,
+            },
+        }
+    }
+
+    /// Resolve the embedding destination. Anthropic has no embeddings API, so
+    /// only an OpenAI-compatible cloud provider serves cloud embeddings; Local
+    /// and Anthropic both fall back to the local embedding engine.
+    pub fn embed_target(&self) -> ProviderTarget {
+        if self.chat_provider == ChatProvider::OpenaiCompatible {
+            ProviderTarget {
+                anthropic: false,
+                base_url: self.openai_base_url.trim_end_matches('/').to_string(),
+                api_key: self.openai_api_key.clone(),
+                model: self.openai_embed_model.clone(),
+                is_local: false,
+            }
+        } else {
+            ProviderTarget {
+                anthropic: false,
+                base_url: format!("{}/v1", self.embed_base_url()),
+                api_key: None,
+                model: "local".to_string(),
+                is_local: true,
+            }
+        }
+    }
+
     /// Enforce the air-gap invariants on a config coming from the (untrusted)
     /// webview before it is persisted or used to spawn a process. Rejects a
-    /// non-loopback host (which would let the UI redirect all inference traffic
-    /// off-box) and any engine-binary path that is not a recognised local engine
-    /// (which would otherwise let the UI make Rust spawn an arbitrary executable).
+    /// non-loopback host (which would let the UI redirect local traffic off-box),
+    /// any engine-binary path that is not a recognised local engine (arbitrary
+    /// exec), and any cloud provider while strict air-gap is on.
     pub fn validate(&self) -> Result<(), String> {
         if !is_loopback_host(&self.host) {
             return Err(format!(
@@ -131,7 +235,31 @@ impl AppConfig {
         }
         validate_engine_binary("llama_binary", self.llama_binary.as_deref())?;
         validate_engine_binary("vllm_binary", self.vllm_binary.as_deref())?;
+
+        // Strict air-gap is incompatible with any off-box provider.
+        if self.offline_mode && self.chat_provider != ChatProvider::Local {
+            return Err("Strict air-gapped mode allows only the Local provider. \
+                        Turn off air-gap to use a cloud API, or select Local."
+                .to_string());
+        }
+        match self.chat_provider {
+            ChatProvider::OpenaiCompatible => require_http_url("openai_base_url", &self.openai_base_url)?,
+            ChatProvider::Anthropic => require_http_url("anthropic_base_url", &self.anthropic_base_url)?,
+            ChatProvider::Local => {}
+        }
         Ok(())
+    }
+}
+
+/// A minimal http(s) URL check for cloud endpoints (no dependency needed).
+fn require_http_url(label: &str, url: &str) -> Result<(), String> {
+    let u = url.trim();
+    let rest = u
+        .strip_prefix("https://")
+        .or_else(|| u.strip_prefix("http://"));
+    match rest {
+        Some(host) if !host.is_empty() => Ok(()),
+        _ => Err(format!("{label} must be an http(s) URL; refused {url:?}")),
     }
 }
 
@@ -181,7 +309,7 @@ fn validate_engine_binary(label: &str, path: Option<&str>) -> Result<(), String>
 
 #[cfg(test)]
 mod tests {
-    use super::is_loopback_host;
+    use super::*;
 
     #[test]
     fn loopback_hosts_accepted() {
@@ -203,6 +331,50 @@ mod tests {
         ] {
             assert!(!is_loopback_host(h), "{h} must NOT be loopback");
         }
+    }
+
+    #[test]
+    fn local_default_config_validates() {
+        assert!(AppConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn air_gap_forbids_cloud_providers() {
+        let mut c = AppConfig::default();
+        c.offline_mode = true;
+        c.chat_provider = ChatProvider::OpenaiCompatible;
+        c.openai_api_key = Some("sk-x".into());
+        assert!(c.validate().is_err(), "air-gap + cloud must be rejected");
+        c.offline_mode = false;
+        assert!(c.validate().is_ok(), "cloud allowed once air-gap is off");
+    }
+
+    #[test]
+    fn cloud_requires_http_url() {
+        let mut c = AppConfig::default();
+        c.offline_mode = false;
+        c.chat_provider = ChatProvider::OpenaiCompatible;
+        c.openai_base_url = "ftp://nope".into();
+        assert!(c.validate().is_err());
+        c.openai_base_url = "https://api.groq.com/openai/v1".into();
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn targets_route_by_provider() {
+        let mut c = AppConfig::default();
+        // Local -> loopback, no key, OpenAI wire.
+        let t = c.chat_target();
+        assert!(t.is_local && !t.anthropic && t.base_url.contains("127.0.0.1"));
+        // Anthropic -> native wire, its base URL + model.
+        c.chat_provider = ChatProvider::Anthropic;
+        c.anthropic_api_key = Some("sk-ant".into());
+        let t = c.chat_target();
+        assert!(t.anthropic && !t.is_local && t.base_url.contains("api.anthropic.com"));
+        assert_eq!(t.model, "claude-sonnet-5");
+        // OpenAI-compatible embeddings route to the cloud endpoint.
+        c.chat_provider = ChatProvider::OpenaiCompatible;
+        assert!(!c.embed_target().is_local);
     }
 }
 

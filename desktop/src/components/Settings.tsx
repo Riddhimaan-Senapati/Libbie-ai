@@ -1,6 +1,7 @@
 import * as React from "react";
 import {
   ArrowLeft,
+  Cloud,
   Cpu,
   FolderOpen,
   HardDrive,
@@ -10,6 +11,8 @@ import {
   ShieldCheck,
   Download,
   Server,
+  Database,
+  Layers,
 } from "lucide-react";
 
 import type {
@@ -19,10 +22,10 @@ import type {
   ModelEntry,
   EngineChoice,
   IndexStatus,
+  HfFile,
 } from "@/lib/tauri";
-import { isTauri } from "@/lib/tauri";
+import { isTauri, listHfGguf, downloadModel } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
-import { Database, Layers } from "lucide-react";
 
 function Field({
   label,
@@ -87,7 +90,67 @@ export function Settings({
   const [indexing, setIndexing] = React.useState(false);
   const [indexError, setIndexError] = React.useState<string | null>(null);
 
+  // HuggingFace model download
+  const [hfRepo, setHfRepo] = React.useState("");
+  const [hfToken, setHfToken] = React.useState("");
+  const [hfFiles, setHfFiles] = React.useState<HfFile[]>([]);
+  const [hfFile, setHfFile] = React.useState("");
+  const [hfListing, setHfListing] = React.useState(false);
+  const [hfError, setHfError] = React.useState<string | null>(null);
+  const [dl, setDl] = React.useState<{ active: boolean; fraction: number; done?: string } | null>(
+    null,
+  );
+
+  const cloudSelected = draft.chat_provider !== "local";
+
   React.useEffect(() => setDraft(config), [config]);
+
+  const listHf = async () => {
+    setHfError(null);
+    setHfFiles([]);
+    setHfFile("");
+    if (!hfRepo.trim()) {
+      setHfError("Enter a HuggingFace repo, e.g. Qwen/Qwen2.5-0.5B-Instruct-GGUF");
+      return;
+    }
+    setHfListing(true);
+    try {
+      const files = await listHfGguf(hfRepo.trim(), undefined, hfToken || undefined);
+      setHfFiles(files);
+      if (files[0]) setHfFile(files[0].path);
+      if (files.length === 0) setHfError("No .gguf files found in that repo.");
+    } catch (e) {
+      setHfError(String(e));
+    } finally {
+      setHfListing(false);
+    }
+  };
+
+  const download = async () => {
+    setHfError(null);
+    if (!hfFile) {
+      setHfError("Pick a .gguf file to download.");
+      return;
+    }
+    setDl({ active: true, fraction: 0 });
+    await downloadModel(
+      hfRepo.trim(),
+      hfFile,
+      {
+        onProgress: (_d, _t, fraction) => setDl({ active: true, fraction }),
+        onDone: (path) => {
+          setDl({ active: false, fraction: 1, done: path });
+          onRefreshModels();
+        },
+        onError: (message) => {
+          setHfError(message);
+          setDl(null);
+        },
+      },
+      undefined,
+      hfToken || undefined,
+    );
+  };
 
   const set = <K extends keyof AppConfig>(key: K, value: AppConfig[K]) => {
     setDraft((d) => ({ ...d, [key]: value }));
@@ -131,6 +194,108 @@ export function Settings({
         </button>
         <h1 className="text-xl font-semibold">Model &amp; engine settings</h1>
       </div>
+
+      {/* chat provider */}
+      <section className="panel mb-5 rounded-xl p-4">
+        <h2 className="mb-3 flex items-center gap-2 text-[13px] font-semibold">
+          <Cloud className="size-4 text-primary" aria-hidden /> Chat provider
+        </h2>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Provider" hint="Local keeps the strict air-gap; cloud needs air-gap off.">
+            <select
+              className={inputCls}
+              value={draft.chat_provider}
+              onChange={(e) => set("chat_provider", e.target.value as AppConfig["chat_provider"])}
+            >
+              <option value="local">Local (llama.cpp / vLLM)</option>
+              <option value="openai_compatible">OpenAI-compatible API</option>
+              <option value="anthropic">Anthropic</option>
+            </select>
+          </Field>
+          {cloudSelected && draft.offline_mode && (
+            <p className="self-end rounded-lg bg-danger/10 px-3 py-2 text-[11px] text-danger">
+              Turn off “Strict air-gapped mode” below to save a cloud provider.
+            </p>
+          )}
+        </div>
+
+        {draft.chat_provider === "openai_compatible" && (
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <Field label="Base URL" hint="OpenAI, Groq, Together, Mistral, OpenRouter, a local proxy…">
+              <input
+                className={inputCls}
+                value={draft.openai_base_url}
+                onChange={(e) => set("openai_base_url", e.target.value)}
+                placeholder="https://api.openai.com/v1"
+              />
+            </Field>
+            <Field label="API key" hint="Stored locally in your config.">
+              <input
+                type="password"
+                className={inputCls}
+                value={draft.openai_api_key ?? ""}
+                onChange={(e) => set("openai_api_key", e.target.value || null)}
+                placeholder="sk-…"
+              />
+            </Field>
+            <Field label="Chat model">
+              <input
+                className={inputCls}
+                value={draft.openai_model}
+                onChange={(e) => set("openai_model", e.target.value)}
+                placeholder="gpt-4o-mini"
+              />
+            </Field>
+            <Field label="Embedding model" hint="Used for cloud RAG (optional).">
+              <input
+                className={inputCls}
+                value={draft.openai_embed_model}
+                onChange={(e) => set("openai_embed_model", e.target.value)}
+                placeholder="text-embedding-3-small"
+              />
+            </Field>
+          </div>
+        )}
+
+        {draft.chat_provider === "anthropic" && (
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <Field label="Base URL">
+              <input
+                className={inputCls}
+                value={draft.anthropic_base_url}
+                onChange={(e) => set("anthropic_base_url", e.target.value)}
+                placeholder="https://api.anthropic.com"
+              />
+            </Field>
+            <Field label="API key" hint="Stored locally in your config.">
+              <input
+                type="password"
+                className={inputCls}
+                value={draft.anthropic_api_key ?? ""}
+                onChange={(e) => set("anthropic_api_key", e.target.value || null)}
+                placeholder="sk-ant-…"
+              />
+            </Field>
+            <Field label="Model">
+              <input
+                className={inputCls}
+                value={draft.anthropic_model}
+                onChange={(e) => set("anthropic_model", e.target.value)}
+                placeholder="claude-sonnet-5"
+              />
+            </Field>
+            <p className="self-end text-[11px] text-muted-foreground">
+              Anthropic has no embeddings API — RAG uses the local embedder or keyword fallback.
+            </p>
+          </div>
+        )}
+
+        {draft.chat_provider === "local" && (
+          <p className="mt-1 text-[12px] text-muted-foreground">
+            Configure the local engine, model, and embeddings below. Nothing leaves the machine.
+          </p>
+        )}
+      </section>
 
       {/* hardware + engine choice */}
       <section className="panel mb-5 rounded-xl p-4">
@@ -525,23 +690,109 @@ export function Settings({
         )}
       </section>
 
-      {/* model staging (HF) */}
+      {/* download models from HuggingFace */}
       <section className="panel mb-5 rounded-xl p-4">
         <h2 className="mb-2 flex items-center gap-2 text-[13px] font-semibold">
-          <Download className="size-4 text-primary" aria-hidden /> Staging models (offline)
+          <Download className="size-4 text-primary" aria-hidden /> Download a model from HuggingFace
         </h2>
-        <p className="mb-2 text-[12px] text-muted-foreground">
-          Air-gapped hosts have no runtime egress. Pre-stage GGUF models into the models
-          directory on a connected machine, then copy them across. From the Hugging Face Hub:
-        </p>
-        <pre className="scroll-soft overflow-x-auto rounded-lg bg-muted px-3 py-2 font-mono text-[11.5px] text-foreground">
-{`hf download Qwen/Qwen2.5-0.5B-Instruct-GGUF \\
-  qwen2.5-0.5b-instruct-q4_k_m.gguf --local-dir "${draft.models_dir}"
+        {draft.offline_mode ? (
+          <p className="rounded-lg bg-muted/50 px-3 py-2 text-[12px] text-muted-foreground">
+            Downloads are disabled in strict air-gapped mode. Turn off air-gap above to download,
+            or stage a <span className="font-mono">.gguf</span> into{" "}
+            <span className="font-mono">{draft.models_dir}</span> manually
+            (e.g. <span className="font-mono">hf download owner/repo-GGUF file.gguf --local-dir …</span>).
+          </p>
+        ) : (
+          <>
+            <p className="mb-3 text-[12px] text-muted-foreground">
+              Enter a GGUF repo, list its files, and download straight into your models folder.
+            </p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="HuggingFace repo" hint="e.g. Qwen/Qwen2.5-0.5B-Instruct-GGUF">
+                <div className="flex gap-2">
+                  <input
+                    className={inputCls}
+                    value={hfRepo}
+                    onChange={(e) => setHfRepo(e.target.value)}
+                    placeholder="owner/repo-GGUF"
+                  />
+                  <button
+                    type="button"
+                    onClick={listHf}
+                    disabled={hfListing}
+                    className="shrink-0 rounded-lg border border-border px-2.5 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50"
+                  >
+                    {hfListing ? <Loader2 className="size-4 animate-spin" aria-hidden /> : "List"}
+                  </button>
+                </div>
+              </Field>
+              <Field label="Token (optional)" hint="Only for gated/private repos.">
+                <input
+                  type="password"
+                  className={inputCls}
+                  value={hfToken}
+                  onChange={(e) => setHfToken(e.target.value)}
+                  placeholder="hf_…"
+                />
+              </Field>
+            </div>
 
-# embeddings (optional, for vector RAG):
-hf download nomic-ai/nomic-embed-text-v1.5-GGUF \\
-  nomic-embed-text-v1.5.Q4_K_M.gguf --local-dir "${draft.models_dir}"`}
-        </pre>
+            {hfFiles.length > 0 && (
+              <div className="mt-4 grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end">
+                <Field label="GGUF file">
+                  <select
+                    className={inputCls}
+                    value={hfFile}
+                    onChange={(e) => setHfFile(e.target.value)}
+                  >
+                    {hfFiles.map((f) => (
+                      <option key={f.path} value={f.path}>
+                        {f.path}
+                        {f.size_mb ? ` (${f.size_mb} MB)` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <button
+                  type="button"
+                  onClick={download}
+                  disabled={dl?.active}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-[12px] font-medium text-primary-foreground disabled:opacity-50"
+                >
+                  {dl?.active ? (
+                    <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                  ) : (
+                    <Download className="size-3.5" aria-hidden />
+                  )}
+                  Download
+                </button>
+              </div>
+            )}
+
+            {dl?.active && (
+              <div className="mt-3">
+                <div className="h-2 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full bg-primary transition-[width]"
+                    style={{ width: `${Math.round(dl.fraction * 100)}%` }}
+                  />
+                </div>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Downloading… {Math.round(dl.fraction * 100)}%
+                </p>
+              </div>
+            )}
+            {dl?.done && (
+              <p className="mt-2 rounded-lg bg-ok/10 px-3 py-2 text-[11px] text-ok">
+                Downloaded to <span className="font-mono">{dl.done}</span>. Pick it in the chat/
+                embedding model dropdown above.
+              </p>
+            )}
+          </>
+        )}
+        {hfError && (
+          <p className="mt-2 rounded-lg bg-danger/10 px-3 py-2 text-[11px] text-danger">{hfError}</p>
+        )}
       </section>
 
       <div className="sticky bottom-0 -mx-6 flex items-center justify-end gap-3 border-t border-border bg-background/90 px-6 py-3 backdrop-blur">

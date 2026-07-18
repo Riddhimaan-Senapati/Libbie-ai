@@ -36,6 +36,8 @@ pub fn run() {
             commands::index_status,
             commands::build_index,
             commands::vector_search,
+            commands::list_hf_gguf,
+            commands::download_model,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Libbie desktop")

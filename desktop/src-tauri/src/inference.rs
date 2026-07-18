@@ -1,13 +1,19 @@
-//! OpenAI-compatible inference proxy.
+//! Inference proxy for every provider.
 //!
-//! All model traffic is mediated here (never by the webview), so the UI makes
-//! zero network calls and the air-gapped guarantee is enforced in Rust: the
-//! only destinations are the loopback engine ports.
+//! All model traffic is mediated here (never by the webview). Requests are routed
+//! by a resolved [`ProviderTarget`]: a local llama.cpp/vLLM server, any
+//! OpenAI-compatible endpoint, or the Anthropic Messages API. For LOCAL targets
+//! the air-gap is enforced in Rust — the only destination allowed is loopback.
+//! Cloud targets are reachable only when the user has turned strict air-gap off
+//! (validated in `config`), so page JS can never silently exfiltrate.
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use tauri::ipc::Channel;
 
 use futures_util::StreamExt;
+
+use crate::config::ProviderTarget;
 
 /// One chat message in the OpenAI schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,44 +83,94 @@ pub fn assert_loopback(base_url: &str) -> Result<(), String> {
     }
 }
 
-/// Stream a chat completion, forwarding token deltas onto `channel`.
+/// Build the provider-specific POST (URL, auth, body) for a streamed chat.
+fn chat_request(
+    client: &reqwest::Client,
+    target: &ProviderTarget,
+    messages: &[ChatMessage],
+    opts: &ChatOptions,
+) -> reqwest::RequestBuilder {
+    if target.anthropic {
+        // Anthropic: `system` is top-level; messages carry only user/assistant.
+        let mut system = String::new();
+        let mut msgs: Vec<Value> = Vec::new();
+        for m in messages {
+            if m.role == "system" {
+                if !system.is_empty() {
+                    system.push('\n');
+                }
+                system.push_str(&m.content);
+            } else {
+                msgs.push(json!({ "role": m.role, "content": m.content }));
+            }
+        }
+        let mut body = json!({
+            "model": target.model,
+            "max_tokens": opts.max_tokens,   // required by Anthropic
+            "messages": msgs,
+            "temperature": opts.temperature,
+            "top_p": opts.top_p,
+            "stream": true,
+        });
+        if !system.is_empty() {
+            body["system"] = json!(system);
+        }
+        let mut req = client
+            .post(format!("{}/v1/messages", target.base_url))
+            .header("anthropic-version", "2023-06-01")
+            .json(&body);
+        if let Some(key) = &target.api_key {
+            req = req.header("x-api-key", key);
+        }
+        req
+    } else {
+        // OpenAI-compatible (local llama.cpp/vLLM or any cloud endpoint).
+        let body = json!({
+            "model": target.model,
+            "messages": messages,
+            "temperature": opts.temperature,
+            "top_p": opts.top_p,
+            "max_tokens": opts.max_tokens,
+            "stream": true,
+        });
+        let mut req = client
+            .post(format!("{}/chat/completions", target.base_url))
+            .json(&body);
+        if let Some(key) = &target.api_key {
+            req = req.bearer_auth(key);
+        }
+        req
+    }
+}
+
+/// Stream a chat completion from any provider, forwarding token deltas onto
+/// `channel`. One SSE loop handles both wire formats:
+///   * OpenAI-compatible: `data: {json}` with `choices[0].delta.content`, `[DONE]`.
+///   * Anthropic: named events; text lives in `content_block_delta.delta.text`;
+///     completion is `message_stop` (no `[DONE]`); `ping` etc. are ignored.
 pub async fn stream_chat(
     client: &reqwest::Client,
-    base_url: &str,
+    target: &ProviderTarget,
     messages: Vec<ChatMessage>,
     opts: ChatOptions,
-    offline: bool,
     channel: &Channel<StreamEvent>,
 ) -> Result<(), String> {
-    // Loopback is enforced unconditionally: this client only ever talks to the
-    // local engine, so page JS must not be able to opt out via the offline flag.
-    let _ = offline;
-    assert_loopback(base_url)?;
+    if target.is_local {
+        assert_loopback(&target.base_url)?;
+    }
 
-    let url = format!("{}/v1/chat/completions", base_url);
-    let body = serde_json::json!({
-        "model": "local",
-        "messages": messages,
-        "temperature": opts.temperature,
-        "top_p": opts.top_p,
-        "max_tokens": opts.max_tokens,
-        "stream": true,
-    });
-
-    let resp = client
-        .post(&url)
-        .json(&body)
+    let resp = chat_request(client, target, &messages, &opts)
         .send()
         .await
-        .map_err(|e| format!("Could not reach the local engine: {e}"))?;
+        .map_err(|e| format!("Could not reach the model provider: {e}"))?;
 
     if !resp.status().is_success() {
         let code = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Engine returned {code}: {text}"));
+        return Err(format!("Provider returned {code}: {text}"));
     }
 
-    // Parse Server-Sent Events: lines beginning with "data: ".
+    let anthropic = target.anthropic;
     let mut buf = String::new();
     let mut stream = resp.bytes_stream();
     let mut finish_reason = "stop".to_string();
@@ -123,88 +179,150 @@ pub async fn stream_chat(
         let bytes = chunk.map_err(|e| format!("Stream error: {e}"))?;
         buf.push_str(&String::from_utf8_lossy(&bytes));
 
-        // Process complete lines; keep the trailing partial in `buf`.
         while let Some(pos) = buf.find('\n') {
             let line = buf[..pos].trim().to_string();
             buf.drain(..=pos);
             let Some(data) = line.strip_prefix("data:") else {
-                continue;
+                continue; // ignore `event:` and comment lines
             };
             let data = data.trim();
-            if data == "[DONE]" {
+            if data.is_empty() {
+                continue;
+            }
+            if !anthropic && data == "[DONE]" {
                 let _ = channel.send(StreamEvent::Done {
                     finish_reason: finish_reason.clone(),
                 });
                 return Ok(());
             }
-            if data.is_empty() {
+            let Ok(json) = serde_json::from_str::<Value>(data) else {
                 continue;
-            }
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                if let Some(choice) = json.get("choices").and_then(|c| c.get(0)) {
-                    if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
-                        finish_reason = reason.to_string();
-                    }
-                    if let Some(text) = choice
-                        .get("delta")
-                        .and_then(|d| d.get("content"))
-                        .and_then(|c| c.as_str())
-                    {
-                        if !text.is_empty() {
-                            let _ = channel.send(StreamEvent::Token {
-                                text: text.to_string(),
-                            });
+            };
+
+            if anthropic {
+                match json.get("type").and_then(|t| t.as_str()) {
+                    Some("content_block_delta") => {
+                        if json.pointer("/delta/type").and_then(|t| t.as_str()) == Some("text_delta")
+                        {
+                            if let Some(t) = json.pointer("/delta/text").and_then(|t| t.as_str()) {
+                                if !t.is_empty() {
+                                    let _ = channel.send(StreamEvent::Token { text: t.to_string() });
+                                }
+                            }
                         }
+                    }
+                    Some("message_delta") => {
+                        if let Some(r) = json.pointer("/delta/stop_reason").and_then(|r| r.as_str()) {
+                            finish_reason = r.to_string();
+                        }
+                    }
+                    Some("message_stop") => {
+                        let _ = channel.send(StreamEvent::Done {
+                            finish_reason: finish_reason.clone(),
+                        });
+                        return Ok(());
+                    }
+                    Some("error") => {
+                        let msg = json
+                            .pointer("/error/message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("provider stream error")
+                            .to_string();
+                        let _ = channel.send(StreamEvent::Error { message: msg.clone() });
+                        return Err(msg);
+                    }
+                    _ => {} // ping / message_start / content_block_start|stop / etc.
+                }
+            } else if let Some(choice) = json.get("choices").and_then(|c| c.get(0)) {
+                if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
+                    finish_reason = reason.to_string();
+                }
+                if let Some(text) = choice
+                    .pointer("/delta/content")
+                    .and_then(|c| c.as_str())
+                {
+                    if !text.is_empty() {
+                        let _ = channel.send(StreamEvent::Token { text: text.to_string() });
                     }
                 }
             }
         }
     }
 
-    // Stream ended without an explicit [DONE].
     let _ = channel.send(StreamEvent::Done { finish_reason });
     Ok(())
 }
 
-/// Request embeddings for a batch of inputs (used by the RAG index).
+/// Request embeddings for a batch of inputs (used by the RAG index). Routes to a
+/// local engine or an OpenAI-compatible cloud endpoint per the resolved target.
 pub async fn embed(
     client: &reqwest::Client,
-    base_url: &str,
+    target: &ProviderTarget,
     inputs: Vec<String>,
-    offline: bool,
 ) -> Result<Vec<Vec<f32>>, String> {
-    // Loopback is enforced unconditionally: this client only ever talks to the
-    // local engine, so page JS must not be able to opt out via the offline flag.
-    let _ = offline;
-    assert_loopback(base_url)?;
-    let url = format!("{}/v1/embeddings", base_url);
-    let body = serde_json::json!({ "model": "local", "input": inputs });
-    let resp = client
-        .post(&url)
-        .json(&body)
+    if target.is_local {
+        assert_loopback(&target.base_url)?;
+    }
+    let mut req = client
+        .post(format!("{}/embeddings", target.base_url))
+        .json(&json!({ "model": target.model, "input": inputs }));
+    if let Some(key) = &target.api_key {
+        req = req.bearer_auth(key);
+    }
+    let resp = req
         .send()
         .await
-        .map_err(|e| format!("Could not reach the embedding engine: {e}"))?;
+        .map_err(|e| format!("Could not reach the embedding provider: {e}"))?;
     if !resp.status().is_success() {
         let code = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Embedding engine returned {code}: {text}"));
+        return Err(format!("Embedding provider returned {code}: {text}"));
     }
-    let json: serde_json::Value = resp
+    let json: Value = resp
         .json()
         .await
         .map_err(|e| format!("Bad embedding response: {e}"))?;
-    let mut out = Vec::new();
+    // Sort by `index` when present so vector order matches input order.
+    let mut rows: Vec<(i64, Vec<f32>)> = Vec::new();
     if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
-        for item in data {
-            if let Some(arr) = item.get("embedding").and_then(|e| e.as_array()) {
-                out.push(
-                    arr.iter()
-                        .filter_map(|v| v.as_f64().map(|f| f as f32))
-                        .collect(),
-                );
-            }
+        for (i, item) in data.iter().enumerate() {
+            let idx = item.get("index").and_then(|v| v.as_i64()).unwrap_or(i as i64);
+            let vec = item
+                .get("embedding")
+                .and_then(|e| e.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect())
+                .unwrap_or_default();
+            rows.push((idx, vec));
         }
     }
-    Ok(out)
+    rows.sort_by_key(|(i, _)| *i);
+    Ok(rows.into_iter().map(|(_, v)| v).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::assert_loopback;
+
+    #[test]
+    fn loopback_urls_pass() {
+        for u in [
+            "http://127.0.0.1:51820/v1",
+            "http://localhost:8080",
+            "http://[::1]:51820/v1",
+        ] {
+            assert!(assert_loopback(u).is_ok(), "{u} should pass");
+        }
+    }
+
+    #[test]
+    fn non_loopback_and_spoofed_urls_fail() {
+        for u in [
+            "http://127.0.0.1.evil.com/v1", // substring-bypass attempt
+            "https://api.openai.com/v1",
+            "http://evil.com/?x=127.0.0.1",
+            "not a url",
+        ] {
+            assert!(assert_loopback(u).is_err(), "{u} must be rejected");
+        }
+    }
 }

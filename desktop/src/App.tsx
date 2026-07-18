@@ -95,7 +95,16 @@ export default function App() {
   const reqId = React.useRef(0);
 
   const selectedFile: CodeFile = getCodeFile(selectedPath) ?? pipeline.files[0];
-  const engineLabel = hardware ? `${status.engine ?? "llama"} · ${hardware.llama_backend}` : undefined;
+  const usingCloud = (config?.chat_provider ?? "local") !== "local";
+  const engineLabel = usingCloud
+    ? config?.chat_provider === "anthropic"
+      ? `Anthropic · ${config?.anthropic_model ?? ""}`
+      : `Cloud · ${config?.openai_model ?? ""}`
+    : hardware
+      ? `${status.engine ?? "llama"} · ${hardware.llama_backend}`
+      : undefined;
+  // Chat is ready when a cloud provider is configured, or the local engine is healthy.
+  const chatReady = usingCloud || status.healthy;
 
   // ---- boot -------------------------------------------------------------
   const refreshStatus = React.useCallback(async () => {
@@ -273,7 +282,7 @@ export default function App() {
                   streaming: false,
                   verdict:
                     s.verdict ||
-                    `I couldn't reach the local engine. ${msg}\n\nStart it from the status bar, then ask again.`,
+                    `I couldn't reach the model provider. ${msg}\n\nCheck Settings (engine or API key), then ask again.`,
                 }
               : s,
           );
@@ -300,8 +309,9 @@ export default function App() {
         answeredLocally: !!config?.offline_mode,
       });
 
-      // Best-effort: bring the chat engine up if it isn't ready yet.
-      if (!status.healthy) {
+      // Best-effort: bring the LOCAL chat engine up if needed. A cloud provider
+      // needs no local engine, so skip this gate entirely.
+      if (!usingCloud && !status.healthy) {
         const s = await handleStart();
         if (!s?.healthy) {
           setSession((cur) =>
@@ -310,7 +320,7 @@ export default function App() {
                   ...cur,
                   streaming: false,
                   verdict:
-                    "The local engine isn't running yet. Open Settings, pick a GGUF model, and press Start engine — then ask me again.",
+                    "The local engine isn't running yet. Open Settings, pick a GGUF model, and press Start engine — or choose a cloud provider — then ask me again.",
                 }
               : cur,
           );
@@ -329,7 +339,15 @@ export default function App() {
       if (retrieved.code[0]) focusCode(retrieved.code[0]);
       await runInference(question, retrieved, "technical");
     },
-    [status.healthy, config?.offline_mode, indexInfo.indexed, focusCode, handleStart, runInference],
+    [
+      usingCloud,
+      status.healthy,
+      config?.offline_mode,
+      indexInfo.indexed,
+      focusCode,
+      handleStart,
+      runInference,
+    ],
   );
 
   const onViewChange = React.useCallback(
@@ -479,7 +497,7 @@ export default function App() {
                   view={view}
                   onViewChange={onViewChange}
                   statusLine={statusLine}
-                  engineReady={status.healthy}
+                  engineReady={chatReady}
                   engineLabel={engineLabel}
                   onAskNudge={askNudge}
                   onFocusCode={focusCode}
@@ -500,7 +518,7 @@ export default function App() {
         open={askOpen}
         onOpenChange={setAskOpen}
         onAsk={ask}
-        disabled={!status.healthy}
+        disabled={!chatReady}
       />
 
       <Sheet open={riskOpen} onClose={() => setRiskOpen(false)} title="Libbie's watchlist">

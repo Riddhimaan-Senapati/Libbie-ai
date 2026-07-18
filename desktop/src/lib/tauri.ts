@@ -27,6 +27,15 @@ export interface AppConfig {
   vllm_max_model_len: number | null;
   vllm_quantization: string | null;
   vllm_dtype: string;
+  // cloud providers (used only when offline_mode is off)
+  chat_provider: "local" | "openai_compatible" | "anthropic";
+  openai_base_url: string;
+  openai_api_key: string | null;
+  openai_model: string;
+  openai_embed_model: string;
+  anthropic_base_url: string;
+  anthropic_api_key: string | null;
+  anthropic_model: string;
 }
 
 export interface HardwareInfo {
@@ -134,6 +143,14 @@ function devConfig(): AppConfig {
     vllm_max_model_len: null,
     vllm_quantization: null,
     vllm_dtype: "auto",
+    chat_provider: "local",
+    openai_base_url: "https://api.openai.com/v1",
+    openai_api_key: null,
+    openai_model: "gpt-4o-mini",
+    openai_embed_model: "text-embedding-3-small",
+    anthropic_base_url: "https://api.anthropic.com",
+    anthropic_api_key: null,
+    anthropic_model: "claude-sonnet-5",
   };
   return stored ? { ...base, ...JSON.parse(stored) } : base;
 }
@@ -504,6 +521,82 @@ export async function vectorSearch(
     distance: 1 - x.sim,
     similarity: Math.max(0, Math.min(1, x.sim)),
   }));
+}
+
+// ---------------------------------------------------------------------------
+// HuggingFace model download
+// ---------------------------------------------------------------------------
+
+export interface HfFile {
+  path: string;
+  size_mb: number;
+}
+
+export type DownloadEvent =
+  | { type: "progress"; downloaded: number; total: number; fraction: number }
+  | { type: "done"; path: string }
+  | { type: "error"; message: string };
+
+export interface DownloadHandlers {
+  onProgress: (downloaded: number, total: number, fraction: number) => void;
+  onDone: (path: string) => void;
+  onError: (message: string) => void;
+}
+
+/** List the .gguf files available in a HuggingFace repo. */
+export async function listHfGguf(
+  repo: string,
+  revision?: string,
+  token?: string,
+): Promise<HfFile[]> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<HfFile[]>("list_hf_gguf", {
+      repo,
+      revision: revision ?? null,
+      token: token ?? null,
+    });
+  }
+  // Browser dev: hit the public HF tree API directly (may be CORS-limited).
+  const rev = revision ?? "main";
+  const r = await fetch(
+    `https://huggingface.co/api/models/${repo}/tree/${rev}?recursive=true`,
+    token ? { headers: { Authorization: `Bearer ${token}` } } : undefined,
+  );
+  if (!r.ok) throw new Error(`HuggingFace returned ${r.status}`);
+  const items = (await r.json()) as Array<{ type: string; path: string; size?: number }>;
+  return items
+    .filter((it) => it.type === "file" && it.path.toLowerCase().endsWith(".gguf"))
+    .map((it) => ({ path: it.path, size_mb: Math.round((it.size ?? 0) / 1024 / 1024) }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/** Stream-download a GGUF into the models directory (desktop app only). */
+export async function downloadModel(
+  repo: string,
+  filename: string,
+  handlers: DownloadHandlers,
+  revision?: string,
+  token?: string,
+): Promise<void> {
+  if (!isTauri()) {
+    handlers.onError("Model downloads are only available in the desktop app.");
+    return;
+  }
+  const { invoke, Channel } = await import("@tauri-apps/api/core");
+  const channel = new Channel<DownloadEvent>();
+  channel.onmessage = (evt) => {
+    if (evt.type === "progress") handlers.onProgress(evt.downloaded, evt.total, evt.fraction);
+    else if (evt.type === "done") handlers.onDone(evt.path);
+    else if (evt.type === "error") handlers.onError(evt.message);
+  };
+  await invoke("download_model", {
+    repo,
+    filename,
+    revision: revision ?? null,
+    token: token ?? null,
+    onProgress: channel,
+  });
 }
 
 export { DEV_BASE_URL };
