@@ -1,0 +1,14 @@
+From: Sofia Ramirez <sramirez@genomicslab.org>
+To: Wei Zhang <wzhang@genomicslab.org>
+Date: Fri, 12 Feb 2021 12:10:00 -0500
+Subject: rnaseq quant handoff
+Message-ID: <rnaseq-handoff-002@genomicslab.org>
+Content-Type: text/plain; charset="utf-8"
+
+Wei,
+
+The salmon quant for cohortA is done. We chose libType ISR (stranded reverse) --
+keep that setting for any re-runs so the transcript orientation stays consistent.
+Output is in /data/rnaseq/rnaseq_sampleA_quant.sf.
+
+Sofia

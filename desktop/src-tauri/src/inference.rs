@@ -59,12 +59,16 @@ pub enum StreamEvent {
     Error { message: String },
 }
 
-/// Assert the destination is loopback before any request when offline mode is on.
+/// Assert the destination is genuinely loopback before any request.
+///
+/// The URL is parsed and its host matched exactly (see
+/// `config::is_loopback_host`) — a substring test would accept
+/// `http://127.0.0.1.evil.com` or `http://evil.com/?x=localhost`.
 pub fn assert_loopback(base_url: &str) -> Result<(), String> {
-    let ok = base_url.contains("127.0.0.1")
-        || base_url.contains("localhost")
-        || base_url.contains("[::1]");
-    if ok {
+    let url = reqwest::Url::parse(base_url)
+        .map_err(|e| format!("Air-gapped mode: unparseable engine URL {base_url:?} ({e})"))?;
+    let host = url.host_str().unwrap_or("");
+    if crate::config::is_loopback_host(host) {
         Ok(())
     } else {
         Err(format!(
@@ -82,9 +86,10 @@ pub async fn stream_chat(
     offline: bool,
     channel: &Channel<StreamEvent>,
 ) -> Result<(), String> {
-    if offline {
-        assert_loopback(base_url)?;
-    }
+    // Loopback is enforced unconditionally: this client only ever talks to the
+    // local engine, so page JS must not be able to opt out via the offline flag.
+    let _ = offline;
+    assert_loopback(base_url)?;
 
     let url = format!("{}/v1/chat/completions", base_url);
     let body = serde_json::json!({
@@ -168,9 +173,10 @@ pub async fn embed(
     inputs: Vec<String>,
     offline: bool,
 ) -> Result<Vec<Vec<f32>>, String> {
-    if offline {
-        assert_loopback(base_url)?;
-    }
+    // Loopback is enforced unconditionally: this client only ever talks to the
+    // local engine, so page JS must not be able to opt out via the offline flag.
+    let _ = offline;
+    assert_loopback(base_url)?;
     let url = format!("{}/v1/embeddings", base_url);
     let body = serde_json::json!({ "model": "local", "input": inputs });
     let resp = client

@@ -1,0 +1,17 @@
+[
+  {
+    "type": "message",
+    "user": "U04WEI",
+    "ts": "1612882800.000200",
+    "thread_ts": "1612882800.000200",
+    "text": "Cluster housekeeping: we're going with a 30 day scratch retention policy as the new default. Anything under /scratch older than 30 days gets purged automatically.",
+    "reactions": [{ "name": "+1", "count": 3, "users": ["U01PRIYA", "U02DANIEL", "U03SOFIA"] }]
+  },
+  {
+    "type": "message",
+    "user": "U03SOFIA",
+    "ts": "1612884000.000300",
+    "thread_ts": "1612882800.000200",
+    "text": "makes sense. also let's keep the default job allocation at 8 cores unless a job needs more."
+  }
+]

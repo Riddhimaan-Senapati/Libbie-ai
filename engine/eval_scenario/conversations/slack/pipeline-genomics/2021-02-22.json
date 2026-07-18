@@ -1,0 +1,24 @@
+[
+  {
+    "type": "message",
+    "user": "U01PRIYA",
+    "ts": "1614002400.000200",
+    "thread_ts": "1614002400.000200",
+    "text": "Re-run needed: min-base-quality-score 20 was too strict for the low-coverage samples in cohortA, we were losing real hets. I'm lowering min-base-quality-score to 18 for the second batch. Decided after eyeballing the coverage QC.",
+    "reactions": [{ "name": "+1", "count": 1, "users": ["U02DANIEL"] }]
+  },
+  {
+    "type": "message",
+    "user": "U02DANIEL",
+    "ts": "1614003300.000300",
+    "thread_ts": "1614002400.000200",
+    "text": "agreed, 18 makes sense for the shallow ones. keep everything else the same."
+  },
+  {
+    "type": "message",
+    "user": "U01PRIYA",
+    "ts": "1614004200.000400",
+    "thread_ts": "1614002400.000200",
+    "text": "yes, reference stays GRCh38, only the quality floor changes."
+  }
+]

@@ -1,0 +1,24 @@
+[
+  {
+    "type": "message",
+    "user": "U03SOFIA",
+    "ts": "1612976400.000200",
+    "thread_ts": "1612976400.000200",
+    "text": "For the cohortA RNA-seq quant we're going with salmon. libType ISR because the library prep is stranded reverse. Decided on the stranded protocol last week.",
+    "reactions": [{ "name": "+1", "count": 1, "users": ["U04WEI"] }]
+  },
+  {
+    "type": "message",
+    "user": "U04WEI",
+    "ts": "1612977300.000300",
+    "thread_ts": "1612976400.000200",
+    "text": "how many bootstraps for the uncertainty estimates?"
+  },
+  {
+    "type": "message",
+    "user": "U03SOFIA",
+    "ts": "1612978500.000400",
+    "thread_ts": "1612976400.000200",
+    "text": "let's set numBootstraps to 100 for the DE downstream. we have 105 samples in this batch so 100 bootstraps per sample is affordable on cpu."
+  }
+]

@@ -116,6 +116,94 @@ impl AppConfig {
             PathBuf::from(&self.models_dir).join(sel)
         }
     }
+
+    /// Enforce the air-gap invariants on a config coming from the (untrusted)
+    /// webview before it is persisted or used to spawn a process. Rejects a
+    /// non-loopback host (which would let the UI redirect all inference traffic
+    /// off-box) and any engine-binary path that is not a recognised local engine
+    /// (which would otherwise let the UI make Rust spawn an arbitrary executable).
+    pub fn validate(&self) -> Result<(), String> {
+        if !is_loopback_host(&self.host) {
+            return Err(format!(
+                "host must be loopback (127.0.0.1 / ::1 / localhost); refused {:?}",
+                self.host
+            ));
+        }
+        validate_engine_binary("llama_binary", self.llama_binary.as_deref())?;
+        validate_engine_binary("vllm_binary", self.vllm_binary.as_deref())?;
+        Ok(())
+    }
+}
+
+/// True only for genuine loopback destinations. Parses the host as an IP (so the
+/// full 127.0.0.0/8 range and ::1 are covered) or accepts the literal
+/// "localhost" — deliberately NOT a substring test, so `127.0.0.1.evil.com`,
+/// `localhost.evil.com`, and `evil.com/?x=127.0.0.1` are all rejected.
+pub fn is_loopback_host(host: &str) -> bool {
+    let h = host.trim();
+    // Strip brackets from IPv6 literals like `[::1]`.
+    let h = h
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(h);
+    if h.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    matches!(h.parse::<std::net::IpAddr>(), Ok(ip) if ip.is_loopback())
+}
+
+/// Engine-binary paths are privileged: the app spawns them. Only allow an
+/// absolute path to an existing file whose name is a recognised engine launcher.
+fn validate_engine_binary(label: &str, path: Option<&str>) -> Result<(), String> {
+    let Some(path) = path else { return Ok(()) };
+    let p = std::path::Path::new(path);
+    if !p.is_absolute() {
+        return Err(format!("{label} must be an absolute path: {path:?}"));
+    }
+    if !p.is_file() {
+        return Err(format!("{label} is not an existing file: {path:?}"));
+    }
+    let name = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let base = name.strip_suffix(".exe").unwrap_or(&name);
+    const ALLOWED: [&str; 4] = ["llama-server", "vllm", "python", "python3"];
+    if !ALLOWED.contains(&base) {
+        return Err(format!(
+            "{label} must be a recognised engine launcher \
+             (llama-server / vllm / python); refused {name:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_loopback_host;
+
+    #[test]
+    fn loopback_hosts_accepted() {
+        for h in ["127.0.0.1", "localhost", "LOCALHOST", "::1", "[::1]", "127.5.5.5"] {
+            assert!(is_loopback_host(h), "{h} should be loopback");
+        }
+    }
+
+    #[test]
+    fn spoofed_hosts_rejected() {
+        for h in [
+            "127.0.0.1.evil.com",
+            "localhost.evil.com",
+            "evil.com",
+            "10.0.0.5",
+            "8.8.8.8",
+            "0.0.0.0",
+            "",
+        ] {
+            assert!(!is_loopback_host(h), "{h} must NOT be loopback");
+        }
+    }
 }
 
 /// Path to the persisted config file: `<config-dir>/Libbie/config.json`.

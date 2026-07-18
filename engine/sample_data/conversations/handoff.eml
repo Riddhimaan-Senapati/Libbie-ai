@@ -1,0 +1,16 @@
+From: Elena Vasquez <evasquez@lab.edu>
+To: Marcus Chen <mchen@lab.edu>
+Date: Fri, 10 Nov 2023 16:32:00 -0500
+Subject: Re: germline pipeline handoff
+Message-ID: <handoff-001@lab.edu>
+Content-Type: text/plain; charset="utf-8"
+
+Marcus,
+
+Before I go: the germline caller runs on GRCh37 on purpose -- do not "upgrade" it
+to GRCh38 without re-calling the entire 2019 cohort, or the joint genotyping breaks.
+The min-base-quality-score is 20 (see the sbatch in pipelines/germline).
+
+Everything writes to /data/results/. The paper figures pull sample01.vcf directly.
+
+Elena

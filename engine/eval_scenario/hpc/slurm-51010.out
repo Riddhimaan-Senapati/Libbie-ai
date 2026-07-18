@@ -1,0 +1,9 @@
+Currently Loaded Modules:
+  1) salmon/1.5.2
+
+Running: salmon quant --index /refs/salmon/gencode_v38 --libType ISR --threads 8 --numBootstraps 100 --output /data/rnaseq/rnaseq_sampleA_quant.sf
+[salmon] version 1.5.2
+[salmon] mapping library type: ISR
+[salmon] bootstrap replicates: 100
+[salmon] wrote /data/rnaseq/rnaseq_sampleA_quant.sf (58204 transcripts quantified)
+Done. exit 0

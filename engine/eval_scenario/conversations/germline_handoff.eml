@@ -1,0 +1,17 @@
+From: Priya Nair <pnair@genomicslab.org>
+To: Daniel Okafor <dokafor@genomicslab.org>
+Date: Thu, 25 Feb 2021 19:05:00 -0500
+Subject: germline cohortA re-run notes
+Message-ID: <germline-handoff-001@genomicslab.org>
+Content-Type: text/plain; charset="utf-8"
+
+Daniel,
+
+Notes on the cohortA germline re-run (batch 2):
+
+- Reference stays GRCh38 (GRCh38_full_analysis_set). Do not switch builds.
+- I lowered min-base-quality-score to 18 for this batch because 20 was too strict
+  on the low-coverage samples. Everything else is unchanged.
+- Calls land in /data/results/. The paper figures pull cohortA_sample01 directly.
+
+Priya

@@ -47,6 +47,9 @@ pub async fn set_config(
     state: State<'_, AppState>,
     config: AppConfig,
 ) -> Result<AppConfig, String> {
+    // The webview is untrusted: validate the air-gap invariants (loopback host,
+    // recognised engine binary) before persisting or spawning anything with it.
+    config.validate()?;
     config::save(&config).map_err(|e| format!("Could not save config: {e}"))?;
     *state.config.lock().await = config.clone();
     Ok(config)

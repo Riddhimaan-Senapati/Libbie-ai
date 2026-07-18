@@ -1,0 +1,24 @@
+[
+  {
+    "type": "message",
+    "user": "U023ELENA",
+    "ts": "1676280000.000200",
+    "thread_ts": "1676280000.000200",
+    "text": "For the germline cohort I'm going with GRCh37 (human_g1k_v37), not GRCh38. Our legacy 2019 samples were all called on 37 and we need the joint-genotyping to be comparable. Switching builds mid-cohort would invalidate the comparison.",
+    "reactions": [{ "name": "+1", "count": 3, "users": ["U08MARCUS"] }]
+  },
+  {
+    "type": "message",
+    "user": "U08MARCUS",
+    "ts": "1676281200.000300",
+    "thread_ts": "1676280000.000200",
+    "text": "makes sense. what about the base quality filter?"
+  },
+  {
+    "type": "message",
+    "user": "U023ELENA",
+    "ts": "1676282400.000400",
+    "thread_ts": "1676280000.000200",
+    "text": "min-base-quality-score 20. 30 was dropping too many real hets in the low-coverage exomes. 20 is the GATK default and matches the 2019 run, so we stay consistent."
+  }
+]

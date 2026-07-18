@@ -1,0 +1,22 @@
+Title: Germline variant discovery in the 2021 exome cohort
+Authors: P. Nair, D. Okafor
+Year: 2021
+DOI: 10.1234/germline.2021.01
+
+Abstract
+We report germline short-variant calls for the 2021 exome cohort (cohortA) using GRCh38.
+We recovered over 3 million high-confidence variants under a conservative base-quality threshold.
+
+Methods
+Reads were aligned to GRCh38 (GRCh38_full_analysis_set) and short variants were called with
+GATK HaplotypeCaller. The first batch used a minimum base quality score of 20; the low-coverage
+second batch used 18. Per-sample calls were written to the results directory.
+
+Results
+We identified 3,142,880 high-confidence germline variants in cohortA_sample01 (Figure 2).
+Variant counts remained stable across coverage strata under the base-quality threshold of 18.
+The transition to transversion ratio was 2.01, consistent with high-quality calls.
+
+Discussion
+Adopting GRCh38 for this new cohort aligned the calls with the current annotation caches and
+avoided the comparability constraints that would apply to a legacy GRCh37 dataset.

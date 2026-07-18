@@ -1,0 +1,9 @@
+Currently Loaded Modules:
+  1) gatk/4.2.6.1   2) samtools/1.15
+
+Running: gatk HaplotypeCaller --reference /refs/GRCh37/human_g1k_v37.fasta --input /data/aligned/sample01.bam --output /data/results/sample01.vcf --min-base-quality-score 20 --standard-min-confidence-threshold-for-calling 30
+[GATK] HaplotypeCaller v4.2.6.1
+[GATK] reference build: GRCh37 (human_g1k_v37)
+[GATK] processing intervals: whole genome
+[GATK] wrote /data/results/sample01.vcf (12048 variants)
+Done. exit 0

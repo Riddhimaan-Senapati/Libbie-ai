@@ -1,0 +1,8 @@
+Currently Loaded Modules:
+  1) mosdepth/0.3.3
+
+Running: mosdepth --threads 4 --output /data/qc/cohortA_qc_metrics.txt --by 500 /data/aligned/cohortA_sample01.bam
+[mosdepth] version 0.3.3
+[mosdepth] mean autosomal coverage: 41.2x
+[mosdepth] wrote /data/qc/cohortA_qc_metrics.txt (coverage summary)
+Done. exit 0

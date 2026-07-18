@@ -1,0 +1,24 @@
+Title: Germline variant calling in a legacy exome cohort
+Authors: E. Vasquez, M. Chen
+Year: 2023
+DOI: 10.1234/germline.2023.01
+
+Abstract
+We report germline short-variant calls across the 2019 exome cohort and show that
+call counts are stable across coverage strata under a conservative base-quality
+threshold.
+
+Methods
+Reads were aligned to the GRCh37 reference (human_g1k_v37). Short variants were
+called with GATK HaplotypeCaller using a minimum base quality score of 20 and a
+standard calling confidence threshold of 30. Final per-sample calls are written to
+sample01.vcf and downstream joint-genotyping inputs.
+
+Results
+We identified 12,048 high-confidence germline variants in sample01 (Figure 2).
+Variant counts were stable across coverage strata, supporting the choice of a base
+quality threshold of 20 rather than 30.
+
+Discussion
+Retaining the GRCh37 build preserved comparability with previously published 2019
+calls; a switch to GRCh38 would have required re-calling the full cohort.
