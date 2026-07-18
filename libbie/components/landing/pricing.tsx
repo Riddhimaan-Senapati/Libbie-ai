@@ -15,7 +15,7 @@ const FREE_FEATURES: string[] = [
 const ENTERPRISE_FEATURES: string[] = [
   "Unlimited questions across every pipeline",
   "On-prem & air-gapped deployment",
-  "Local inference — zero data egress",
+  "Local inference with zero data egress",
   "Proactive watchlist + one-click handover docs",
   "SSO, audit logs and priority support",
 ];

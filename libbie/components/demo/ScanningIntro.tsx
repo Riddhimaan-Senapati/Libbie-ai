@@ -164,7 +164,7 @@ export function ScanningIntro({ onComplete }: { onComplete: () => void }) {
           </h2>
           <p className="mt-2 max-w-md text-sm text-muted-foreground">
             Indexing artifacts and fusing code with the conversations that justified
-            it — building one queryable memory of the pipeline.
+            it, into one queryable memory of the pipeline.
           </p>
 
           {/* Phase label */}

@@ -57,7 +57,7 @@ export function Hero() {
             variants={item}
             className="mx-auto mt-7 max-w-2xl text-pretty text-base leading-relaxed text-muted-foreground sm:text-lg"
           >
-            Meet Libbie — the colleague who remembers why every pipeline was built this way.
+            Meet Libbie, the colleague who remembers why every pipeline was built this way.
             She's read every line of code and every conversation, and answers with receipts.
           </motion.p>
 
