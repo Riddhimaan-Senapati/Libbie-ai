@@ -8,6 +8,7 @@
 mod commands;
 mod config;
 mod engine;
+mod github;
 mod inference;
 mod vecstore;
 
@@ -38,6 +39,9 @@ pub fn run() {
             commands::vector_search,
             commands::list_hf_gguf,
             commands::download_model,
+            commands::github_login,
+            commands::github_list_repos,
+            commands::github_index_repo,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Libbie desktop")

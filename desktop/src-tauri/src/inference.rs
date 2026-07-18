@@ -59,10 +59,23 @@ impl Default for ChatOptions {
 pub enum StreamEvent {
     /// A newly generated text delta.
     Token { text: String },
+    /// Token accounting for the call, emitted once just before `Done`.
+    /// `tokens_per_sec` is only known for local llama.cpp (from `timings`).
+    Usage {
+        input_tokens: u32,
+        output_tokens: u32,
+        tokens_per_sec: Option<f32>,
+    },
     /// The stream finished normally.
     Done { finish_reason: String },
     /// The stream failed.
     Error { message: String },
+}
+
+/// Rough token count from a character length: `ceil(chars / 4)`. Used only as a
+/// last-resort fallback when the provider reports no usage (no tokenizer dep).
+fn est_tokens(chars: usize) -> u32 {
+    ((chars + 3) / 4) as u32
 }
 
 /// Assert the destination is genuinely loopback before any request.
@@ -144,6 +157,8 @@ fn chat_request(
         req
     } else {
         // OpenAI-compatible (local llama.cpp/vLLM or any cloud endpoint).
+        // `stream_options.include_usage` asks the server to emit a trailing
+        // usage chunk (choices == [], usage populated) just before `[DONE]`.
         let body = json!({
             "model": target.model,
             "messages": messages,
@@ -151,6 +166,7 @@ fn chat_request(
             "top_p": opts.top_p,
             "max_tokens": opts.max_tokens,
             "stream": true,
+            "stream_options": { "include_usage": true },
         });
         let req = client
             .post(format!("{}/chat/completions", target.base_url))
@@ -186,6 +202,39 @@ pub async fn stream_chat(
     let mut stream = resp.bytes_stream();
     let mut finish_reason = "stop".to_string();
 
+    // Usage accounting. Provider-reported values win; `timings` (llama.cpp) is a
+    // fallback for counts and the only source of tokens/sec; a char/4 estimate is
+    // the last resort. `streamed_chars` feeds the output estimate.
+    let mut usage_in: Option<u32> = None;
+    let mut usage_out: Option<u32> = None;
+    let mut timings_in: Option<u32> = None;
+    let mut timings_out: Option<u32> = None;
+    let mut tokens_per_sec: Option<f32> = None;
+    let mut streamed_chars: usize = 0;
+
+    // Resolve the final counts (provider → timings → estimate) and push a single
+    // `Usage` event. Called immediately before every `Done`.
+    let emit_usage = |channel: &Channel<StreamEvent>,
+                      usage_in: Option<u32>,
+                      usage_out: Option<u32>,
+                      timings_in: Option<u32>,
+                      timings_out: Option<u32>,
+                      tokens_per_sec: Option<f32>,
+                      streamed_chars: usize| {
+        let input_tokens = usage_in.or(timings_in).unwrap_or_else(|| {
+            // chars(), not len(): match the chars/4 intent (and the output path).
+            est_tokens(messages.iter().map(|m| m.content.chars().count()).sum())
+        });
+        let output_tokens = usage_out
+            .or(timings_out)
+            .unwrap_or_else(|| est_tokens(streamed_chars));
+        let _ = channel.send(StreamEvent::Usage {
+            input_tokens,
+            output_tokens,
+            tokens_per_sec,
+        });
+    };
+
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.map_err(|e| format!("Stream error: {e}"))?;
         buf.push_str(&String::from_utf8_lossy(&bytes));
@@ -201,6 +250,10 @@ pub async fn stream_chat(
                 continue;
             }
             if !anthropic && data == "[DONE]" {
+                emit_usage(
+                    channel, usage_in, usage_out, timings_in, timings_out,
+                    tokens_per_sec, streamed_chars,
+                );
                 let _ = channel.send(StreamEvent::Done {
                     finish_reason: finish_reason.clone(),
                 });
@@ -212,11 +265,20 @@ pub async fn stream_chat(
 
             if anthropic {
                 match json.get("type").and_then(|t| t.as_str()) {
+                    Some("message_start") => {
+                        if let Some(n) = json
+                            .pointer("/message/usage/input_tokens")
+                            .and_then(|v| v.as_u64())
+                        {
+                            usage_in = Some(n as u32);
+                        }
+                    }
                     Some("content_block_delta") => {
                         if json.pointer("/delta/type").and_then(|t| t.as_str()) == Some("text_delta")
                         {
                             if let Some(t) = json.pointer("/delta/text").and_then(|t| t.as_str()) {
                                 if !t.is_empty() {
+                                    streamed_chars += t.chars().count();
                                     let _ = channel.send(StreamEvent::Token { text: t.to_string() });
                                 }
                             }
@@ -226,14 +288,30 @@ pub async fn stream_chat(
                         if let Some(r) = json.pointer("/delta/stop_reason").and_then(|r| r.as_str()) {
                             finish_reason = r.to_string();
                         }
+                        // Cumulative — the last value seen is the total.
+                        if let Some(n) = json
+                            .pointer("/usage/output_tokens")
+                            .and_then(|v| v.as_u64())
+                        {
+                            usage_out = Some(n as u32);
+                        }
                     }
                     Some("message_stop") => {
+                        emit_usage(
+                            channel, usage_in, usage_out, timings_in, timings_out,
+                            tokens_per_sec, streamed_chars,
+                        );
                         let _ = channel.send(StreamEvent::Done {
                             finish_reason: finish_reason.clone(),
                         });
                         return Ok(());
                     }
                     Some("error") => {
+                        // Account partial usage before surfacing the error.
+                        emit_usage(
+                            channel, usage_in, usage_out, timings_in, timings_out,
+                            tokens_per_sec, streamed_chars,
+                        );
                         let msg = json
                             .pointer("/error/message")
                             .and_then(|m| m.as_str())
@@ -242,24 +320,51 @@ pub async fn stream_chat(
                         let _ = channel.send(StreamEvent::Error { message: msg.clone() });
                         return Err(msg);
                     }
-                    _ => {} // ping / message_start / content_block_start|stop / etc.
+                    _ => {} // ping / content_block_start|stop / etc.
                 }
-            } else if let Some(choice) = json.get("choices").and_then(|c| c.get(0)) {
-                if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
-                    finish_reason = reason.to_string();
+            } else {
+                // OpenAI-compatible. The trailing usage chunk has `choices: []`,
+                // so read `usage`/`timings` regardless of the choices array.
+                if let Some(usage) = json.get("usage") {
+                    if let Some(n) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
+                        usage_in = Some(n as u32);
+                    }
+                    if let Some(n) = usage.get("completion_tokens").and_then(|v| v.as_u64()) {
+                        usage_out = Some(n as u32);
+                    }
                 }
-                if let Some(text) = choice
-                    .pointer("/delta/content")
-                    .and_then(|c| c.as_str())
-                {
-                    if !text.is_empty() {
-                        let _ = channel.send(StreamEvent::Token { text: text.to_string() });
+                if let Some(timings) = json.get("timings") {
+                    if let Some(tps) =
+                        timings.get("predicted_per_second").and_then(|v| v.as_f64())
+                    {
+                        tokens_per_sec = Some(tps as f32);
+                    }
+                    if let Some(n) = timings.get("prompt_n").and_then(|v| v.as_u64()) {
+                        timings_in = Some(n as u32);
+                    }
+                    if let Some(n) = timings.get("predicted_n").and_then(|v| v.as_u64()) {
+                        timings_out = Some(n as u32);
+                    }
+                }
+                if let Some(choice) = json.get("choices").and_then(|c| c.get(0)) {
+                    if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
+                        finish_reason = reason.to_string();
+                    }
+                    if let Some(text) = choice.pointer("/delta/content").and_then(|c| c.as_str()) {
+                        if !text.is_empty() {
+                            streamed_chars += text.chars().count();
+                            let _ = channel.send(StreamEvent::Token { text: text.to_string() });
+                        }
                     }
                 }
             }
         }
     }
 
+    emit_usage(
+        channel, usage_in, usage_out, timings_in, timings_out, tokens_per_sec,
+        streamed_chars,
+    );
     let _ = channel.send(StreamEvent::Done { finish_reason });
     Ok(())
 }

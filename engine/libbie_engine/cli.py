@@ -31,10 +31,15 @@ def _cfg(config: Optional[Path]) -> Config:
     return Config.load(config or (_ENGINE / "config.yaml"))
 
 
-def _stores(cfg: Config) -> tuple[ArtifactStore, GraphStore]:
+def _store_root(cfg: Config) -> Path:
     root = Path(cfg.store.root)
     if not root.is_absolute():
         root = _ENGINE / root
+    return root
+
+
+def _stores(cfg: Config) -> tuple[ArtifactStore, GraphStore]:
+    root = _store_root(cfg)
     return ArtifactStore(root), GraphStore(root)
 
 
@@ -155,6 +160,119 @@ def stats(config: Optional[Path] = ConfigOpt) -> None:
                f"hypothesis={len(graph.edges) - committed})")
     for k, v in ek.most_common():
         typer.echo(f"  {k}: {v}")
+
+
+# --------------------------------------------------------------------------- #
+# GitHub integration sub-app: `libbie github {login,repos,ingest}`
+# --------------------------------------------------------------------------- #
+github_app = typer.Typer(
+    help="Authenticate to GitHub (device flow) and ingest any accessible repo.",
+    no_args_is_help=True,
+    add_completion=False,
+)
+app.add_typer(github_app, name="github")
+
+
+@github_app.command("login")
+def github_login(config: Optional[Path] = ConfigOpt) -> None:
+    """Authenticate via GitHub OAuth device flow and store the token."""
+    from . import github as gh
+
+    client_id = gh.get_client_id()
+    if not client_id:
+        typer.echo(
+            "No client id. Register a GitHub OAuth App (device flow enabled) and "
+            "set $LIBBIE_GITHUB_CLIENT_ID.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    try:
+        device = gh.request_device_code(client_id, scope="repo")
+    except Exception as exc:
+        typer.echo(f"Could not start device flow: {exc}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"Open {device.verification_uri} and enter code: {device.user_code}")
+    typer.echo("Waiting for authorization...")
+    try:
+        token = gh.poll_for_token(client_id, device.device_code, device.interval)
+    except gh.DeviceFlowError as exc:
+        typer.echo(f"Authorization failed: {exc}", err=True)
+        raise typer.Exit(1)
+
+    cfg = _cfg(config)
+    gh.save_token(token, _store_root(cfg))
+    typer.echo("Authenticated. Token stored securely (never logged).")
+
+
+@github_app.command("repos")
+def github_repos(config: Optional[Path] = ConfigOpt) -> None:
+    """List repositories the stored token can access."""
+    from . import github as gh
+
+    cfg = _cfg(config)
+    token = gh.load_token(_store_root(cfg))
+    if not token:
+        typer.echo("Not authenticated. Run `libbie github login` first.", err=True)
+        raise typer.Exit(1)
+
+    repos = gh.list_repos(token)
+    if not repos:
+        typer.echo(
+            "No accessible repos. If you expect org private repos, the token may "
+            "need SAML SSO authorization for that org."
+        )
+        return
+    for r in repos:
+        vis = "private" if r.private else "public"
+        typer.echo(f"  {r.full_name:<45} {vis:<8} {r.description or ''}")
+
+
+@github_app.command("ingest")
+def github_ingest(
+    repo: str = typer.Argument(..., help="Repository as owner/repo."),
+    rev: Optional[str] = typer.Option(None, "--rev", help="Branch or tag to clone."),
+    config: Optional[Path] = ConfigOpt,
+) -> None:
+    """Clone owner/repo into the store, ingest its history, and save the graph."""
+    from . import github as gh
+    from .ingest import ingest_git
+    from .lazarus import annotate_environment
+
+    cfg = _cfg(config)
+    store, gstore = _stores(cfg)
+    root = _store_root(cfg)
+
+    token = gh.load_token(root)
+    if not token:
+        typer.echo("Not authenticated. Run `libbie github login` first.", err=True)
+        raise typer.Exit(1)
+
+    # App-controlled clone destination under the store (validated repo -> safe name).
+    dest = root / "github" / repo.replace("/", "__")
+    if dest.exists():
+        import shutil
+
+        shutil.rmtree(dest, ignore_errors=True)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        path = gh.clone_repo(repo, token, dest, rev=rev)
+    except (ValueError, gh.GitHubError) as exc:
+        typer.echo(f"Clone failed: {exc}", err=True)
+        raise typer.Exit(1)
+
+    graph = gstore.load()
+    nodes = ingest_git(str(path), store=store)
+    for n in nodes:
+        graph.add_node(n)
+    annotate_environment(graph)
+    gstore.save(graph)
+    typer.echo(
+        f"Ingested {len(nodes)} nodes from {repo}. "
+        f"Graph now has {len(graph.nodes)} nodes."
+    )
 
 
 def main() -> None:

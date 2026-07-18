@@ -112,6 +112,14 @@ pub struct AppConfig {
     pub anthropic_base_url: String,
     pub anthropic_api_key: Option<String>,
     pub anthropic_model: String,
+
+    // ---- GitHub integration (OAuth device flow) ---------------------------
+    /// OAuth access token from the device flow. Sensitive — never logged.
+    /// Stored alongside the API-key fields for consistency.
+    pub github_token: Option<String>,
+    /// Registered GitHub OAuth App client id. Empty falls back to the
+    /// `LIBBIE_GITHUB_CLIENT_ID` environment variable. Device flow needs no secret.
+    pub github_client_id: String,
 }
 
 impl Default for AppConfig {
@@ -142,6 +150,8 @@ impl Default for AppConfig {
             anthropic_base_url: "https://api.anthropic.com".to_string(),
             anthropic_api_key: None,
             anthropic_model: "claude-sonnet-5".to_string(),
+            github_token: None,
+            github_client_id: String::new(),
         }
     }
 }
@@ -235,6 +245,45 @@ impl AppConfig {
             ChatProvider::Local => {}
         }
         Ok(())
+    }
+
+    /// A copy safe to hand to the (untrusted) webview: every secret is masked to
+    /// SECRET_SENTINEL when set, or None when unset. The real values never leave
+    /// the Rust core (inference/github proxy through Rust). See get_config.
+    pub fn redacted(&self) -> AppConfig {
+        let mut c = self.clone();
+        c.openai_api_key = mask_secret(&c.openai_api_key);
+        c.anthropic_api_key = mask_secret(&c.anthropic_api_key);
+        c.github_token = mask_secret(&c.github_token);
+        c
+    }
+
+    /// Merge secrets from the currently-stored config into an incoming config
+    /// from the webview: a field equal to SECRET_SENTINEL means "unchanged" and
+    /// keeps the stored value; an empty string clears it; anything else updates.
+    pub fn merge_secrets_from(&mut self, current: &AppConfig) {
+        self.openai_api_key = merge_secret(self.openai_api_key.take(), &current.openai_api_key);
+        self.anthropic_api_key = merge_secret(self.anthropic_api_key.take(), &current.anthropic_api_key);
+        self.github_token = merge_secret(self.github_token.take(), &current.github_token);
+    }
+}
+
+/// Sentinel the UI shows in place of a stored secret; sent back verbatim means
+/// "keep the existing value".
+pub const SECRET_SENTINEL: &str = "__libbie_saved__";
+
+fn mask_secret(v: &Option<String>) -> Option<String> {
+    match v {
+        Some(s) if !s.is_empty() => Some(SECRET_SENTINEL.to_string()),
+        _ => None,
+    }
+}
+
+fn merge_secret(incoming: Option<String>, current: &Option<String>) -> Option<String> {
+    match incoming {
+        Some(s) if s == SECRET_SENTINEL => current.clone(), // unchanged -> keep stored
+        Some(s) if s.is_empty() => None,                     // explicitly cleared
+        other => other,                                      // updated
     }
 }
 
@@ -374,6 +423,28 @@ mod tests {
         c.chat_provider = ChatProvider::OpenaiCompatible;
         assert!(!c.embed_target().is_local);
     }
+
+    #[test]
+    fn redaction_hides_secrets_and_merge_preserves_them() {
+        let mut c = AppConfig::default();
+        c.openai_api_key = Some("sk-real".into());
+        c.github_token = Some("gho-real".into());
+
+        // redacted(): set secrets masked to the sentinel, unset ones dropped.
+        let red = c.redacted();
+        assert_eq!(red.openai_api_key.as_deref(), Some(SECRET_SENTINEL));
+        assert_eq!(red.github_token.as_deref(), Some(SECRET_SENTINEL));
+        assert_eq!(red.anthropic_api_key, None);
+
+        // merge_secrets_from(): sentinel keeps stored, empty clears, other updates.
+        let mut incoming = red.clone();
+        incoming.anthropic_api_key = Some("sk-new".into());
+        incoming.github_token = Some(String::new());
+        incoming.merge_secrets_from(&c);
+        assert_eq!(incoming.openai_api_key.as_deref(), Some("sk-real"));
+        assert_eq!(incoming.anthropic_api_key.as_deref(), Some("sk-new"));
+        assert_eq!(incoming.github_token, None);
+    }
 }
 
 /// Path to the persisted config file: `<config-dir>/Libbie/config.json`.
@@ -392,6 +463,13 @@ pub fn default_models_dir() -> PathBuf {
 pub fn index_db_path() -> PathBuf {
     let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join("Libbie").join("index.db")
+}
+
+/// Scratch directory for GitHub repo clones: `<data-dir>/Libbie/repos`. Clones
+/// are shallow and removed after indexing.
+pub fn github_repos_dir() -> PathBuf {
+    let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
+    base.join("Libbie").join("repos")
 }
 
 /// Load config from disk, falling back to (and persisting) defaults.

@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 
 use crate::config::{self, AppConfig};
 use crate::engine::{self, EngineChoice, EngineManager, EngineStatus, HardwareInfo};
+use crate::github::{self, Repo};
 use crate::inference::{self, ChatMessage, ChatOptions, StreamEvent};
 use crate::vecstore::{Hit, VecStore};
 
@@ -42,20 +43,26 @@ pub struct ModelEntry {
 
 #[tauri::command]
 pub async fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
-    Ok(state.config.lock().await.clone())
+    // Never hand secrets (API keys, github token) to the untrusted webview.
+    Ok(state.config.lock().await.redacted())
 }
 
 #[tauri::command]
 pub async fn set_config(
     state: State<'_, AppState>,
-    config: AppConfig,
+    mut config: AppConfig,
 ) -> Result<AppConfig, String> {
-    // The webview is untrusted: validate the air-gap invariants (loopback host,
-    // recognised engine binary) before persisting or spawning anything with it.
+    // The webview only ever sees masked secrets, so merge the stored real values
+    // back in (SECRET_SENTINEL = unchanged), then validate the air-gap invariants
+    // (loopback host, recognised engine binary) before persisting.
+    {
+        let current = state.config.lock().await;
+        config.merge_secrets_from(&current);
+    }
     config.validate()?;
     config::save(&config).map_err(|e| format!("Could not save config: {e}"))?;
     *state.config.lock().await = config.clone();
-    Ok(config)
+    Ok(config.redacted())
 }
 
 #[tauri::command]
@@ -208,12 +215,15 @@ pub async fn index_status(state: State<'_, AppState>) -> Result<IndexStatus, Str
     })
 }
 
-/// Embed the corpus (documents prefixed for nomic) and (re)build the vec0 index.
-/// All embedding happens in Rust via the loopback embedding engine.
-#[tauri::command]
-pub async fn build_index(
-    state: State<'_, AppState>,
-    chunks: Vec<Chunk>,
+/// Embed a set of chunks (documents prefixed for nomic) and (re)build the vec0
+/// index. All embedding happens in Rust via the resolved embedding target
+/// (loopback for local). `on_progress(done, total)` is called after each batch
+/// so callers can surface progress; pass a no-op when unused. Shared by
+/// `build_index` and `github_index_repo` so the embed/index logic lives once.
+async fn embed_and_index<F: FnMut(usize, usize)>(
+    state: &AppState,
+    chunks: &[Chunk],
+    mut on_progress: F,
 ) -> Result<IndexStatus, String> {
     if chunks.is_empty() {
         return Err("No chunks to index.".to_string());
@@ -236,6 +246,7 @@ pub async fn build_index(
             return Err("Embedding engine returned the wrong number of vectors.".to_string());
         }
         embeddings.extend(vecs);
+        on_progress(embeddings.len(), chunks.len());
     }
 
     let dim = embeddings
@@ -261,6 +272,16 @@ pub async fn build_index(
         count: chunks.len() as i64,
         dim: Some(dim),
     })
+}
+
+/// Embed the corpus (documents prefixed for nomic) and (re)build the vec0 index.
+/// All embedding happens in Rust via the loopback embedding engine.
+#[tauri::command]
+pub async fn build_index(
+    state: State<'_, AppState>,
+    chunks: Vec<Chunk>,
+) -> Result<IndexStatus, String> {
+    embed_and_index(state.inner(), &chunks, |_, _| {}).await
 }
 
 /// Embed `query` (prefixed for nomic) and return the K nearest chunks, optionally
@@ -435,4 +456,304 @@ async fn stream_to_file(
     }
     file.flush().await.map_err(|e| format!("Flush error: {e}"))?;
     Ok(())
+}
+
+// ---- GitHub integration ----------------------------------------------------
+
+/// Progress events for the GitHub OAuth device flow.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum GithubLoginEvent {
+    /// The user code + verification URL to display; the user enters the code there.
+    Code {
+        user_code: String,
+        verification_uri: String,
+        expires_in: u64,
+    },
+    /// Authorization succeeded and the token was stored.
+    Done,
+    /// The flow failed (denied, expired, network, …).
+    Error { message: String },
+}
+
+/// Progress events for cloning + indexing a repository.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum IndexEvent {
+    /// A human-readable phase update (cloning, scanning, …).
+    Status { message: String },
+    /// Embedding progress over the collected chunks.
+    Progress { done: usize, total: usize, fraction: f64 },
+    /// Indexing finished; `count` chunks are now searchable.
+    Done { count: i64 },
+    /// The operation failed.
+    Error { message: String },
+}
+
+/// File extensions worth indexing (code + text + docs). Anything else is skipped.
+const INDEXABLE_EXTS: &[&str] = &[
+    "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "java", "kt", "kts",
+    "c", "cc", "cpp", "cxx", "h", "hpp", "hh", "cs", "rb", "php", "swift", "scala",
+    "sh", "bash", "zsh", "ps1", "sql", "r", "jl", "lua", "pl", "pm", "ex", "exs",
+    "erl", "clj", "hs", "ml", "dart", "vue", "svelte", "css", "scss", "sass", "less",
+    "html", "htm", "xml", "json", "yaml", "yml", "toml", "ini", "cfg", "conf",
+    "config", "properties", "env", "md", "mdx", "markdown", "rst", "txt", "text",
+    "nf", "nextflow", "wdl", "cwl", "snakefile", "dockerfile", "makefile", "cmake",
+    "gradle", "tf", "hcl", "proto", "graphql", "gql",
+];
+
+/// Directories to skip entirely during the walk (VCS, deps, build output).
+const SKIP_DIRS: &[&str] = &[
+    ".git", "node_modules", "target", "dist", "build", "out", ".venv", "venv",
+    "__pycache__", ".mypy_cache", ".pytest_cache", "vendor", ".next", ".nuxt",
+    ".svelte-kit", ".gradle", ".idea", ".vscode", "coverage", ".cache",
+];
+
+const MAX_FILE_BYTES: u64 = 512 * 1024; // skip files larger than ~512 KB
+const MAX_FILES: usize = 4000; // cap total files indexed from one repo
+const MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024; // aggregate cap: bound peak memory
+const CHUNK_LINES: usize = 120; // window large files into ~120-line chunks
+
+/// True when a file's name/extension marks it as indexable text.
+fn is_indexable_file(path: &Path) -> bool {
+    // Extension-less files with well-known names (Dockerfile, Makefile, …).
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if INDEXABLE_EXTS.contains(&name.as_str()) {
+        return true;
+    }
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => INDEXABLE_EXTS.contains(&ext.to_ascii_lowercase().as_str()),
+        None => false,
+    }
+}
+
+/// Walk a cloned repo and build `Chunk` records: one per ~120-line window of each
+/// indexable text file, carrying its repo-relative path + starting line for
+/// citation. Skips `.git`, dependency/build dirs, binaries (non-UTF-8), files over
+/// ~512 KB, and caps the total file count.
+fn collect_repo_chunks(root: &Path) -> Vec<Chunk> {
+    let mut chunks: Vec<Chunk> = Vec::new();
+    let mut files_seen: usize = 0;
+    let mut total_bytes: usize = 0;
+    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if files_seen >= MAX_FILES {
+                return chunks;
+            }
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+
+            if file_type.is_dir() {
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                if SKIP_DIRS.contains(&name.as_str()) {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            if !file_type.is_file() || !is_indexable_file(&path) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.len() > MAX_FILE_BYTES {
+                continue;
+            }
+            // Non-UTF-8 (binary) files fail here and are skipped.
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            files_seen += 1;
+            // Aggregate byte budget: stop before peak memory gets out of hand on a
+            // pathological repo (many near-max files), independent of the file count.
+            total_bytes += text.len();
+            if total_bytes > MAX_TOTAL_BYTES {
+                return chunks;
+            }
+
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let lines: Vec<&str> = text.lines().collect();
+            let mut start = 0;
+            while start < lines.len() {
+                let end = (start + CHUNK_LINES).min(lines.len());
+                let body = lines[start..end].join("\n");
+                if body.trim().len() >= 3 {
+                    chunks.push(Chunk {
+                        text: format!("{rel}\n{body}"),
+                        path: Some(rel.clone()),
+                        kind: "code".to_string(),
+                        line_start: start as i64 + 1,
+                        conv_id: None,
+                    });
+                }
+                start = end;
+            }
+        }
+    }
+    chunks
+}
+
+/// Resolve the OAuth App client id: config field first, then the
+/// `LIBBIE_GITHUB_CLIENT_ID` environment variable.
+fn resolve_client_id(cfg: &AppConfig) -> Option<String> {
+    let from_cfg = cfg.github_client_id.trim();
+    if !from_cfg.is_empty() {
+        return Some(from_cfg.to_string());
+    }
+    std::env::var("LIBBIE_GITHUB_CLIENT_ID")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Run the GitHub OAuth device flow, emitting the user code then success/failure.
+/// On success the access token is persisted to config (never logged).
+#[tauri::command]
+pub async fn github_login(
+    state: State<'_, AppState>,
+    on_event: Channel<GithubLoginEvent>,
+) -> Result<(), String> {
+    let result = github_login_inner(&state, &on_event).await;
+    if let Err(ref e) = result {
+        let _ = on_event.send(GithubLoginEvent::Error { message: e.clone() });
+    }
+    result
+}
+
+async fn github_login_inner(
+    state: &AppState,
+    on_event: &Channel<GithubLoginEvent>,
+) -> Result<(), String> {
+    let (offline, client_id) = {
+        let cfg = state.config.lock().await;
+        (cfg.offline_mode, resolve_client_id(&cfg))
+    };
+    if offline {
+        return Err("Strict air-gapped mode is on — GitHub access is disabled. \
+                    Turn off air-gap to connect your account."
+            .to_string());
+    }
+    let client_id = client_id.ok_or_else(|| {
+        "No GitHub client id configured. Set it in Settings (or the \
+         LIBBIE_GITHUB_CLIENT_ID environment variable)."
+            .to_string()
+    })?;
+
+    let client = state.engine.client();
+    let dc = github::request_device_code(&client, &client_id).await?;
+    let _ = on_event.send(GithubLoginEvent::Code {
+        user_code: dc.user_code.clone(),
+        verification_uri: dc.verification_uri.clone(),
+        expires_in: dc.expires_in,
+    });
+
+    let token = github::poll_for_token(&client, &client_id, &dc.device_code, dc.interval).await?;
+
+    {
+        let mut cfg = state.config.lock().await;
+        cfg.github_token = Some(token);
+        config::save(&cfg).map_err(|e| format!("Could not save GitHub token: {e}"))?;
+    }
+    let _ = on_event.send(GithubLoginEvent::Done);
+    Ok(())
+}
+
+/// List every repository the connected GitHub account can access.
+#[tauri::command]
+pub async fn github_list_repos(state: State<'_, AppState>) -> Result<Vec<Repo>, String> {
+    let (offline, token) = {
+        let cfg = state.config.lock().await;
+        (cfg.offline_mode, cfg.github_token.clone())
+    };
+    if offline {
+        return Err("Strict air-gapped mode is on — GitHub access is disabled.".to_string());
+    }
+    let token = token.ok_or_else(|| "Not connected to GitHub. Connect your account first.".to_string())?;
+    let client = state.engine.client();
+    github::list_repos(&client, &token).await
+}
+
+/// Clone a repository (shallow) and index it into the RAG store, emitting
+/// progress. Reuses the shared embed/index helper so the vector store is built
+/// exactly as for the sample corpus.
+#[tauri::command]
+pub async fn github_index_repo(
+    state: State<'_, AppState>,
+    full_name: String,
+    on_event: Channel<IndexEvent>,
+) -> Result<IndexStatus, String> {
+    let result = github_index_repo_inner(&state, &full_name, &on_event).await;
+    if let Err(ref e) = result {
+        let _ = on_event.send(IndexEvent::Error { message: e.clone() });
+    }
+    result
+}
+
+async fn github_index_repo_inner(
+    state: &AppState,
+    full_name: &str,
+    on_event: &Channel<IndexEvent>,
+) -> Result<IndexStatus, String> {
+    let (offline, token) = {
+        let cfg = state.config.lock().await;
+        (cfg.offline_mode, cfg.github_token.clone())
+    };
+    if offline {
+        return Err("Strict air-gapped mode is on — GitHub access is disabled.".to_string());
+    }
+    let token = token.ok_or_else(|| "Not connected to GitHub. Connect your account first.".to_string())?;
+
+    // App-controlled, unique clone destination (git requires it not yet exist).
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let base = config::github_repos_dir();
+    tokio::fs::create_dir_all(&base)
+        .await
+        .map_err(|e| format!("Could not create repo scratch dir: {e}"))?;
+    let dest = base.join(format!("clone_{}_{}", std::process::id(), nanos));
+
+    let _ = on_event.send(IndexEvent::Status {
+        message: format!("Cloning {full_name}…"),
+    });
+    if let Err(e) = github::clone_repo(full_name, &token, &dest).await {
+        let _ = tokio::fs::remove_dir_all(&dest).await; // remove any partial clone
+        return Err(e);
+    }
+
+    let _ = on_event.send(IndexEvent::Status {
+        message: "Scanning files…".to_string(),
+    });
+    let chunks = collect_repo_chunks(&dest);
+    // The clone has been read into memory; remove it now (don't keep a copy).
+    let _ = tokio::fs::remove_dir_all(&dest).await;
+
+    if chunks.is_empty() {
+        return Err("No indexable text files were found in that repository.".to_string());
+    }
+
+    let ev = on_event.clone();
+    let status = embed_and_index(state, &chunks, move |done, total| {
+        let fraction = if total > 0 { done as f64 / total as f64 } else { 0.0 };
+        let _ = ev.send(IndexEvent::Progress { done, total, fraction });
+    })
+    .await?;
+
+    let _ = on_event.send(IndexEvent::Done { count: status.count });
+    Ok(status)
 }

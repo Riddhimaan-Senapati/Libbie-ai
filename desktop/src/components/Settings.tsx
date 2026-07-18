@@ -13,6 +13,11 @@ import {
   Server,
   Database,
   Layers,
+  GitBranch,
+  Copy,
+  Check,
+  ExternalLink,
+  Lock,
 } from "lucide-react";
 
 import type {
@@ -23,8 +28,17 @@ import type {
   EngineChoice,
   IndexStatus,
   HfFile,
+  Repo,
 } from "@/lib/tauri";
-import { isTauri, listHfGguf, downloadModel } from "@/lib/tauri";
+import {
+  isTauri,
+  listHfGguf,
+  downloadModel,
+  githubLogin,
+  githubListRepos,
+  githubIndexRepo,
+  SECRET_SENTINEL,
+} from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
 function Field({
@@ -99,6 +113,7 @@ export function Settings({
   onStartEmbed,
   onStopEmbed,
   onBuildIndex,
+  onRefreshIndex,
 }: {
   config: AppConfig;
   status: EngineStatus;
@@ -114,9 +129,10 @@ export function Settings({
   onStart: () => void;
   onStop: () => void;
   onRefreshModels: () => void;
-  onStartEmbed: () => void;
+  onStartEmbed: () => Promise<EngineStatus | null> | void;
   onStopEmbed: () => void;
   onBuildIndex: () => Promise<IndexStatus>;
+  onRefreshIndex?: () => void;
 }) {
   const [draft, setDraft] = React.useState<AppConfig>(config);
   const [saved, setSaved] = React.useState(false);
@@ -134,9 +150,120 @@ export function Settings({
     null,
   );
 
+  // GitHub integration (OAuth device flow + repo indexing)
+  const [ghConnected, setGhConnected] = React.useState(!!config.github_token);
+  const [ghConnecting, setGhConnecting] = React.useState(false);
+  const [ghCode, setGhCode] = React.useState<{ userCode: string; url: string } | null>(null);
+  const [ghCopied, setGhCopied] = React.useState(false);
+  const [ghError, setGhError] = React.useState<string | null>(null);
+  const [ghRepos, setGhRepos] = React.useState<Repo[]>([]);
+  const [ghReposLoading, setGhReposLoading] = React.useState(false);
+  const [ghFilter, setGhFilter] = React.useState("");
+  const [ghSelected, setGhSelected] = React.useState("");
+  const [ghIndex, setGhIndex] = React.useState<{
+    active: boolean;
+    message: string;
+    fraction: number;
+    count?: number;
+  } | null>(null);
+
   const cloudSelected = draft.chat_provider !== "local";
 
   React.useEffect(() => setDraft(config), [config]);
+  React.useEffect(() => {
+    if (config.github_token) setGhConnected(true);
+  }, [config.github_token]);
+
+  const ghFiltered = React.useMemo(() => {
+    const q = ghFilter.trim().toLowerCase();
+    const list = q
+      ? ghRepos.filter(
+          (r) =>
+            r.full_name.toLowerCase().includes(q) ||
+            (r.description ?? "").toLowerCase().includes(q),
+        )
+      : ghRepos;
+    return list.slice(0, 300);
+  }, [ghRepos, ghFilter]);
+
+  const ghLoadRepos = React.useCallback(async () => {
+    setGhError(null);
+    setGhReposLoading(true);
+    try {
+      const repos = await githubListRepos();
+      repos.sort((a, b) => a.full_name.localeCompare(b.full_name));
+      setGhRepos(repos);
+      setGhSelected((s) => s || repos[0]?.full_name || "");
+      if (repos.length === 0) setGhError("No repositories were returned for this account.");
+    } catch (e) {
+      setGhError(String(e));
+    } finally {
+      setGhReposLoading(false);
+    }
+  }, []);
+
+  const ghConnect = async () => {
+    setGhError(null);
+    setGhCode(null);
+    setGhConnecting(true);
+    await githubLogin({
+      onCode: (userCode, verificationUri) => setGhCode({ userCode, url: verificationUri }),
+      onDone: async () => {
+        setGhConnecting(false);
+        setGhCode(null);
+        setGhConnected(true);
+        await ghLoadRepos();
+      },
+      onError: (message) => {
+        setGhError(message);
+        setGhConnecting(false);
+        setGhCode(null);
+      },
+    });
+  };
+
+  const copyCode = async () => {
+    if (!ghCode) return;
+    try {
+      await navigator.clipboard.writeText(ghCode.userCode);
+      setGhCopied(true);
+      setTimeout(() => setGhCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
+
+  const ghIndexSelected = async () => {
+    setGhError(null);
+    if (!ghSelected) {
+      setGhError("Pick a repository to index.");
+      return;
+    }
+    // Repo indexing embeds locally; make sure the embedding engine is up.
+    if (!embedStatus.healthy) {
+      const res = await onStartEmbed();
+      if (res && typeof res === "object" && !res.healthy) {
+        setGhError(
+          "The embedding engine isn't ready. Pick an embedding GGUF model above, start it, then index.",
+        );
+        return;
+      }
+    }
+    setGhIndex({ active: true, message: "Starting…", fraction: 0 });
+    await githubIndexRepo(ghSelected, {
+      onStatus: (message) => setGhIndex((s) => ({ active: true, message, fraction: s?.fraction ?? 0 })),
+      onProgress: (_done, _total, fraction) =>
+        setGhIndex({ active: true, message: "Embedding repository…", fraction }),
+      onDone: (count) => {
+        setGhIndex({ active: false, message: `Indexed ${count} chunks.`, fraction: 1, count });
+        onRefreshIndex?.();
+      },
+      onError: (message) => {
+        setGhError(message);
+        setGhIndex(null);
+      },
+    });
+  };
 
   const listHf = async () => {
     setHfError(null);
@@ -262,13 +389,13 @@ export function Settings({
                 placeholder="https://api.openai.com/v1"
               />
             </Field>
-            <Field label="API key" hint="Stored locally in your config.">
+            <Field label="API key" hint="Kept in the Rust core; never sent back to the UI.">
               <input
                 type="password"
                 className={inputCls}
-                value={draft.openai_api_key ?? ""}
+                value={draft.openai_api_key === SECRET_SENTINEL ? "" : (draft.openai_api_key ?? "")}
                 onChange={(e) => set("openai_api_key", e.target.value || null)}
-                placeholder="sk-…"
+                placeholder={draft.openai_api_key === SECRET_SENTINEL ? "•••• saved. Blank keeps it." : "sk-…"}
               />
             </Field>
             <Field label="Chat model">
@@ -300,13 +427,13 @@ export function Settings({
                 placeholder="https://api.anthropic.com"
               />
             </Field>
-            <Field label="API key" hint="Stored locally in your config.">
+            <Field label="API key" hint="Kept in the Rust core; never sent back to the UI.">
               <input
                 type="password"
                 className={inputCls}
-                value={draft.anthropic_api_key ?? ""}
+                value={draft.anthropic_api_key === SECRET_SENTINEL ? "" : (draft.anthropic_api_key ?? "")}
                 onChange={(e) => set("anthropic_api_key", e.target.value || null)}
-                placeholder="sk-ant-…"
+                placeholder={draft.anthropic_api_key === SECRET_SENTINEL ? "•••• saved. Blank keeps it." : "sk-ant-…"}
               />
             </Field>
             <Field label="Model">
@@ -318,7 +445,7 @@ export function Settings({
               />
             </Field>
             <p className="self-end text-[11px] text-muted-foreground">
-              Anthropic has no embeddings API — RAG uses the local embedder or keyword fallback.
+              Anthropic has no embeddings API, so RAG uses the local embedder or keyword fallback.
             </p>
           </div>
         )}
@@ -357,7 +484,7 @@ export function Settings({
           <p className="mt-3 flex items-start gap-1.5 rounded-lg bg-primary/5 px-3 py-2 text-[12px] text-foreground">
             <Server className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden />
             <span>
-              <span className="font-semibold uppercase">{choice.engine}</span> — {choice.reason}
+              <span className="font-semibold uppercase">{choice.engine}</span>: {choice.reason}
             </span>
           </p>
         )}
@@ -518,8 +645,8 @@ export function Settings({
         <p className="mb-3 text-[12px] text-muted-foreground">
           Used automatically when this host is Linux with an NVIDIA GPU and a{" "}
           <span className="font-mono">vllm</span> binary is set (or when the engine is forced to
-          vLLM). Same OpenAI-compatible contract as llama.cpp — the client is unchanged. vLLM
-          loads HuggingFace weights, not GGUF.
+          vLLM). It uses the same OpenAI-compatible contract as llama.cpp, so the client is
+          unchanged. vLLM loads HuggingFace weights, not GGUF.
         </p>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="vLLM binary" hint="Path to `vllm` (defaults to `vllm` on PATH).">
@@ -621,8 +748,8 @@ export function Settings({
         <p className="mb-3 text-[12px] text-muted-foreground">
           Semantic retrieval uses a local GGUF embedding model (served by a second
           <span className="font-mono"> llama-server</span>) and an on-disk{" "}
-          <span className="font-mono">sqlite-vec</span> index — statically linked, no daemon,
-          fully offline. Without an index, Libbie falls back to keyword retrieval.
+          <span className="font-mono">sqlite-vec</span> index that is statically linked and needs
+          no daemon, so it stays offline. Without an index, Libbie falls back to keyword retrieval.
         </p>
 
         <div className="grid gap-4 sm:grid-cols-2">
@@ -678,7 +805,7 @@ export function Settings({
                 ) : null}
               </>
             ) : (
-              "No vector index yet — keyword retrieval is active."
+              "No vector index yet. Keyword retrieval is active."
             )}
           </span>
           <button
@@ -804,6 +931,194 @@ export function Settings({
         )}
         {hfError && (
           <p className="mt-2 rounded-lg bg-danger/10 px-3 py-2 text-[11px] text-danger">{hfError}</p>
+        )}
+      </section>
+
+      {/* GitHub: connect an account and index a repo into the RAG store */}
+      <section className="panel mb-5 rounded-xl p-4">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-[13px] font-semibold">
+            <GitBranch className="size-4 text-primary" aria-hidden /> Connect GitHub &amp; index a repo
+          </h2>
+          {ghConnected && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-ok/10 px-2 py-0.5 text-[10.5px] font-medium text-ok">
+              <Check className="size-3" aria-hidden /> Connected
+            </span>
+          )}
+        </div>
+
+        {draft.offline_mode ? (
+          <p className="rounded-lg bg-muted/50 px-3 py-2 text-[12px] text-muted-foreground">
+            GitHub access is disabled in strict air-gapped mode. Turn off air-gap above to connect
+            your account and index a repository.
+          </p>
+        ) : (
+          <>
+            <p className="mb-3 text-[12px] text-muted-foreground">
+              Authorize via GitHub&apos;s device flow (no password leaves this app), pick any
+              repository you can access (including private and org-owned), and index it into the
+              local vector store to chat over it.
+            </p>
+
+            {/* Client id (operator-registered OAuth App) */}
+            <div className="mb-4 grid gap-4 sm:grid-cols-2">
+              <Field
+                label="OAuth App client id"
+                hint="From your registered GitHub OAuth App (device flow). Or set LIBBIE_GITHUB_CLIENT_ID."
+              >
+                <input
+                  className={inputCls}
+                  value={draft.github_client_id}
+                  onChange={(e) => set("github_client_id", e.target.value)}
+                  placeholder="Iv1.xxxxxxxxxxxx"
+                />
+              </Field>
+              <div className="flex items-end">
+                {!ghConnected ? (
+                  <button
+                    type="button"
+                    onClick={ghConnect}
+                    disabled={ghConnecting}
+                    className="inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-[12px] font-medium text-primary-foreground disabled:opacity-50"
+                  >
+                    {ghConnecting ? (
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                    ) : (
+                      <GitBranch className="size-3.5" aria-hidden />
+                    )}
+                    Connect GitHub
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={ghLoadRepos}
+                    disabled={ghReposLoading}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-2 text-[12px] font-medium text-muted-foreground hover:text-foreground disabled:opacity-50"
+                  >
+                    {ghReposLoading ? (
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                    ) : null}
+                    Refresh repositories
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Device-flow code prompt */}
+            {ghCode && (
+              <div className="mb-4 rounded-lg border border-primary/30 bg-primary/5 px-3 py-3">
+                <p className="text-[12px] text-foreground">
+                  Open{" "}
+                  <a
+                    href={ghCode.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 font-medium text-primary underline"
+                  >
+                    {ghCode.url}
+                    <ExternalLink className="size-3" aria-hidden />
+                  </a>{" "}
+                  and enter this code:
+                </p>
+                <div className="mt-2 flex items-center gap-2">
+                  <code className="rounded-md bg-background px-3 py-1.5 font-mono text-[15px] font-semibold tracking-widest text-foreground">
+                    {ghCode.userCode}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={copyCode}
+                    className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+                  >
+                    {ghCopied ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
+                    {ghCopied ? "Copied" : "Copy"}
+                  </button>
+                  <span className="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                    <Loader2 className="size-3 animate-spin" aria-hidden /> Waiting for authorization…
+                  </span>
+                </div>
+                <p className="mt-2 flex items-start gap-1.5 text-[11px] text-muted-foreground">
+                  <Lock className="mt-0.5 size-3 shrink-0" aria-hidden />
+                  <span>
+                    For orgs that enforce SAML SSO, authorize the token for that org (GitHub &rarr;
+                    &ldquo;Configure SSO&rdquo;) or its private repos won&apos;t appear.
+                  </span>
+                </p>
+              </div>
+            )}
+
+            {/* Repo picker + index */}
+            {ghConnected && ghRepos.length > 0 && (
+              <div className="grid gap-4">
+                <Field label="Repository" hint="Search by name; private and org repos are included.">
+                  <input
+                    className={cn(inputCls, "mb-2")}
+                    value={ghFilter}
+                    onChange={(e) => setGhFilter(e.target.value)}
+                    placeholder="Filter repositories…"
+                  />
+                  <select
+                    className={inputCls}
+                    size={6}
+                    value={ghSelected}
+                    onChange={(e) => setGhSelected(e.target.value)}
+                  >
+                    {ghFiltered.map((r) => (
+                      <option key={r.full_name} value={r.full_name}>
+                        {r.full_name}
+                        {r.private ? " (private)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+
+                <div className="flex flex-wrap items-center gap-3 rounded-lg bg-muted/40 px-3 py-2.5">
+                  <GitBranch className="size-4 text-primary" aria-hidden />
+                  <span className="text-[12px] text-foreground">
+                    {ghIndex?.count != null
+                      ? `Indexed ${ghIndex.count} chunks from ${ghSelected}.`
+                      : ghSelected
+                        ? <>Ready to index <span className="font-mono">{ghSelected}</span>.</>
+                        : "Pick a repository above."}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={ghIndexSelected}
+                    disabled={ghIndex?.active || !ghSelected}
+                    className="ml-auto inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-[12px] font-medium text-primary-foreground disabled:opacity-50"
+                  >
+                    {ghIndex?.active ? (
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                    ) : (
+                      <Database className="size-3.5" aria-hidden />
+                    )}
+                    Index this repo
+                  </button>
+                </div>
+
+                {ghIndex?.active && (
+                  <div>
+                    <div className="h-2 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full bg-primary transition-[width]"
+                        style={{ width: `${Math.round(ghIndex.fraction * 100)}%` }}
+                      />
+                    </div>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      {ghIndex.message} {ghIndex.fraction > 0 ? `${Math.round(ghIndex.fraction * 100)}%` : ""}
+                    </p>
+                  </div>
+                )}
+                {ghIndex && !ghIndex.active && ghIndex.count != null && (
+                  <p className="rounded-lg bg-ok/10 px-3 py-2 text-[11px] text-ok">
+                    {ghIndex.message} Ask Libbie a question to chat over this repository.
+                  </p>
+                )}
+              </div>
+            )}
+          </>
+        )}
+        {ghError && (
+          <p className="mt-2 rounded-lg bg-danger/10 px-3 py-2 text-[11px] text-danger">{ghError}</p>
         )}
       </section>
 

@@ -52,7 +52,7 @@ export const libbie = {
   name: "Libbie",
   role: "your chief of staff for pipeline knowledge",
   greeting:
-    "I've read this pipeline end to end — every line and every thread. Ask me why anything was built the way it was, and I'll show you the code and the conversation behind it.",
+    "I've read this pipeline end to end, every line and every thread. Ask me why anything was built the way it was, and I'll show you the code and the conversation behind it.",
   idleStatus: "Memory synced",
   thinkingLines: [
     "Cross-referencing config and threads…",
@@ -69,7 +69,7 @@ export const libbie = {
 // What Libbie proactively surfaces before you ask — the signature moment.
 export const proactiveNudge = {
   answerId: "ans-grch37",
-  title: "One decision here is load-bearing — and the person who made it has left.",
+  title: "One decision here is load-bearing, and the person who made it has left.",
   body:
     "Elena pinned this pipeline to GRCh37 for cohort concordance, 14 months ago. I kept the thread that explains it, so you can decide rather than guess.",
 } as const;

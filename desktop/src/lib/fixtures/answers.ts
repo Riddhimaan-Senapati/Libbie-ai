@@ -11,11 +11,11 @@ export const answers: Answer[] = [
     question: "Why was this pipeline built on GRCh37 instead of GRCh38?",
     technical: {
       summary:
-        "GRCh37 was retained deliberately so the Helix cohort stays coordinate-concordant with its historical callset and clinical annotations — not because GRCh38 was unavailable.",
+        "GRCh37 was retained deliberately so the Helix cohort stays coordinate-concordant with its historical callset and clinical annotations. It was not kept because GRCh38 was unavailable.",
       body: [
-        "`params.genome` is pinned to `'GRCh37'` in conf/params.config. The inline note — “legacy cohort concordance — do not bump without re-baselining” — was added by Elena Vasquez at the team's request.",
+        "`params.genome` is pinned to `'GRCh37'` in conf/params.config. Elena Vasquez added the inline note (“legacy cohort concordance — do not bump without re-baselining”) at the team's request.",
         "The Helix cohort's existing variant calls and the 2019–2022 clinical annotation freeze are all in GRCh37 coordinates. Switching to GRCh38 would require a liftover of every downstream comparison and would break concordance with the published baseline.",
-        "Migration to GRCh38 was explicitly scoped as a separate, deliberate re-baselining project — not a parameter change.",
+        "Migration to GRCh38 was explicitly scoped as a separate, deliberate re-baselining project, not a parameter change.",
       ],
     },
     executive: {
@@ -23,7 +23,7 @@ export const answers: Answer[] = [
         "The pipeline uses an older reference map of the genome on purpose, so results stay directly comparable to years of prior cohort data.",
       body: [
         "The team's historical results and clinical annotations were all produced against this reference version. Changing it now would make new results no longer line up with the established baseline.",
-        "Upgrading is possible but is treated as a planned project with re-validation — not a quick switch — to protect continuity of the cohort's record.",
+        "Upgrading is possible but is treated as a planned project with re-validation, not a quick switch, to protect continuity of the cohort's record.",
       ],
     },
     codeCitations: [
@@ -47,7 +47,7 @@ export const answers: Answer[] = [
     },
     executive: {
       summary:
-        "The pipeline keeps only high-confidence read alignments to avoid spurious findings — a precision-first choice validated against a gold-standard benchmark.",
+        "The pipeline keeps only high-confidence read alignments to avoid spurious findings. It's a precision-first choice, validated against a gold-standard benchmark.",
       body: [
         "A looser setting was producing false positives in genomic regions that are inherently hard to read, which showed up as biologically impossible results in family data.",
         "Tightening the threshold removed nearly all of those errors without meaningfully losing real findings, and was peer-reviewed before adoption.",
@@ -65,7 +65,7 @@ export const answers: Answer[] = [
     question: "Why is BWA-MEM invoked with the -M flag?",
     technical: {
       summary:
-        "`-M` flags shorter split hits as secondary so Picard MarkDuplicates and the pinned GATK 4.1 toolchain handle split reads correctly — it's a toolchain-compatibility requirement, not a quality preference.",
+        "`-M` flags shorter split hits as secondary so Picard MarkDuplicates and the pinned GATK 4.1 toolchain handle split reads correctly. It's a toolchain-compatibility requirement, not a quality preference.",
       body: [
         "`params.bwa_extra_args = '-M'` (conf/params.config) is passed straight into the alignment command in bwa_mem.nf.",
         "Without -M, split reads are marked supplementary; Picard MarkDuplicates then miscounts them and BQSR can throw on the supplementary flags in this environment's GATK 4.1.",
@@ -74,7 +74,7 @@ export const answers: Answer[] = [
     },
     executive: {
       summary:
-        "A specific alignment option is set so the downstream tools in this environment process reads correctly — it keeps the toolchain working together reliably.",
+        "A specific alignment option is set so the downstream tools in this environment process reads correctly. It keeps the toolchain working together reliably.",
       body: [
         "Removing this option would cause later steps to mishandle certain reads and could break the run.",
         "It was a documented team decision tied to the specific versions of the tools this pipeline depends on.",
@@ -103,7 +103,7 @@ export const answers: Answer[] = [
       summary:
         "The analysis tool is intentionally frozen at a specific version so published results remain reproducible and defensible.",
       body: [
-        "A newer version subtly changes some results, and those results back a published manuscript — so upgrading requires formal re-validation first.",
+        "A newer version subtly changes some results, and those results back a published manuscript, so upgrading requires formal re-validation first.",
         "The freeze is a compliance-minded, reproducibility decision, not neglect; the upgrade is planned as its own controlled change.",
       ],
     },
@@ -119,7 +119,7 @@ export const answers: Answer[] = [
     question: "Why is the minimum depth filter set to DP ≥ 10?",
     technical: {
       summary:
-        "DP ≥ 10 is the validated floor where genotype quality stabilizes for the ~30x Helix WGS cohort — below ~10x, het/hom calls become unreliable and fail Mendelian checks.",
+        "DP ≥ 10 is the validated floor where genotype quality stabilizes for the ~30x Helix WGS cohort. Below ~10x, het/hom calls become unreliable and fail Mendelian checks.",
       body: [
         "`params.min_depth = 10` (conf/params.config) is applied in filter_variants.nf via `INFO/DP < ${params.min_depth}`.",
         "Below ~10x, allele balance gets noisy and low-confidence hets start failing Mendelian consistency in the trios. DP ≥ 10 is where genotype quality stabilizes for 30x coverage.",
@@ -128,7 +128,7 @@ export const answers: Answer[] = [
     },
     executive: {
       summary:
-        "The pipeline only reports a result at a genome position when it has read it enough times to be confident — a data-quality safeguard tuned to this cohort.",
+        "The pipeline only reports a result at a genome position when it has read it enough times to be confident. It's a data-quality safeguard tuned to this cohort.",
       body: [
         "With too few reads the call becomes unreliable, which showed up as inconsistencies in family data.",
         "The chosen minimum is the validated point where results become trustworthy for this dataset's coverage level.",

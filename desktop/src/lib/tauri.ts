@@ -36,6 +36,9 @@ export interface AppConfig {
   anthropic_base_url: string;
   anthropic_api_key: string | null;
   anthropic_model: string;
+  // GitHub integration (OAuth device flow)
+  github_token: string | null;
+  github_client_id: string;
 }
 
 export interface HardwareInfo {
@@ -80,8 +83,16 @@ export interface ChatOptions {
   top_p?: number;
 }
 
+/** Per-call token accounting (mirrors Rust `StreamEvent::Usage`). */
+export interface Usage {
+  inputTokens: number;
+  outputTokens: number;
+  tokensPerSec: number | null;
+}
+
 export type StreamEvent =
   | { type: "token"; text: string }
+  | { type: "usage"; inputTokens: number; outputTokens: number; tokensPerSec: number | null }
   | { type: "done"; finishReason: string }
   | { type: "error"; message: string };
 
@@ -157,6 +168,8 @@ function devConfig(): AppConfig {
     anthropic_base_url: "https://api.anthropic.com",
     anthropic_api_key: null,
     anthropic_model: "claude-sonnet-5",
+    github_token: null,
+    github_client_id: "",
   };
   return stored ? { ...base, ...JSON.parse(stored) } : base;
 }
@@ -265,6 +278,7 @@ export async function listModels(): Promise<ModelEntry[]> {
 
 export interface AskHandlers {
   onToken: (text: string) => void;
+  onUsage?: (usage: Usage) => void;
   onDone: (finishReason: string) => void;
   onError: (message: string) => void;
 }
@@ -283,6 +297,12 @@ export async function askLibbie(
     const channel = new Channel<StreamEvent>();
     channel.onmessage = (evt) => {
       if (evt.type === "token") handlers.onToken(evt.text);
+      else if (evt.type === "usage")
+        handlers.onUsage?.({
+          inputTokens: evt.inputTokens,
+          outputTokens: evt.outputTokens,
+          tokensPerSec: evt.tokensPerSec,
+        });
       else if (evt.type === "done") handlers.onDone(evt.finishReason);
       else if (evt.type === "error") handlers.onError(evt.message);
     };
@@ -308,6 +328,7 @@ async function devStreamChat(
         model: "local",
         messages,
         stream: true,
+        stream_options: { include_usage: true },
         temperature: options.temperature ?? 0.2,
         top_p: options.top_p ?? 0.9,
         max_tokens: options.max_tokens ?? 768,
@@ -325,6 +346,23 @@ async function devStreamChat(
   const decoder = new TextDecoder();
   let buf = "";
   let finish = "stop";
+  // Usage accounting: provider `usage` wins; llama.cpp `timings` is the fallback
+  // for counts and the only source of tokens/sec; char/4 is the last resort.
+  let usageIn: number | null = null;
+  let usageOut: number | null = null;
+  let timingsIn: number | null = null;
+  let timingsOut: number | null = null;
+  let tokensPerSec: number | null = null;
+  let streamedChars = 0;
+  const estTokens = (chars: number) => Math.ceil(chars / 4);
+  const emitUsage = () => {
+    const inputTokens =
+      usageIn ??
+      timingsIn ??
+      estTokens(messages.reduce((n, m) => n + m.content.length, 0));
+    const outputTokens = usageOut ?? timingsOut ?? estTokens(streamedChars);
+    handlers.onUsage?.({ inputTokens, outputTokens, tokensPerSec });
+  };
   for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
@@ -336,21 +374,37 @@ async function devStreamChat(
       if (!line.startsWith("data:")) continue;
       const data = line.slice(5).trim();
       if (data === "[DONE]") {
+        emitUsage();
         handlers.onDone(finish);
         return;
       }
       if (!data) continue;
       try {
         const json = JSON.parse(data);
+        if (json.usage) {
+          if (typeof json.usage.prompt_tokens === "number") usageIn = json.usage.prompt_tokens;
+          if (typeof json.usage.completion_tokens === "number")
+            usageOut = json.usage.completion_tokens;
+        }
+        if (json.timings) {
+          if (typeof json.timings.predicted_per_second === "number")
+            tokensPerSec = json.timings.predicted_per_second;
+          if (typeof json.timings.prompt_n === "number") timingsIn = json.timings.prompt_n;
+          if (typeof json.timings.predicted_n === "number") timingsOut = json.timings.predicted_n;
+        }
         const choice = json.choices?.[0];
         if (choice?.finish_reason) finish = choice.finish_reason;
         const text = choice?.delta?.content;
-        if (text) handlers.onToken(text);
+        if (text) {
+          streamedChars += text.length;
+          handlers.onToken(text);
+        }
       } catch {
         /* ignore keep-alive lines */
       }
     }
   }
+  emitUsage();
   handlers.onDone(finish);
 }
 
@@ -546,5 +600,91 @@ export async function downloadModel(
     onProgress: channel,
   });
 }
+
+// ---------------------------------------------------------------------------
+// GitHub integration (OAuth device flow + repo indexing)
+// ---------------------------------------------------------------------------
+
+/** A repository the connected account can access (mirrors Rust `Repo`). */
+export interface Repo {
+  full_name: string;
+  private: boolean;
+  description: string | null;
+  default_branch: string | null;
+}
+
+export type GithubLoginEvent =
+  | { type: "code"; userCode: string; verificationUri: string; expiresIn: number }
+  | { type: "done" }
+  | { type: "error"; message: string };
+
+export interface GithubLoginHandlers {
+  onCode: (userCode: string, verificationUri: string, expiresIn: number) => void;
+  onDone: () => void;
+  onError: (message: string) => void;
+}
+
+export type IndexEvent =
+  | { type: "status"; message: string }
+  | { type: "progress"; done: number; total: number; fraction: number }
+  | { type: "done"; count: number }
+  | { type: "error"; message: string };
+
+export interface GithubIndexHandlers {
+  onStatus: (message: string) => void;
+  onProgress: (done: number, total: number, fraction: number) => void;
+  onDone: (count: number) => void;
+  onError: (message: string) => void;
+}
+
+/**
+ * Run the GitHub OAuth device flow. Emits `onCode` with the user code + URL to
+ * display, then `onDone` on success (token stored by the Rust core) or `onError`.
+ * Desktop app only — the device flow and token storage live in Rust.
+ */
+export async function githubLogin(handlers: GithubLoginHandlers): Promise<void> {
+  if (!isTauri()) {
+    handlers.onError("Connecting GitHub is only available in the desktop app.");
+    return;
+  }
+  const { invoke, Channel } = await import("@tauri-apps/api/core");
+  const channel = new Channel<GithubLoginEvent>();
+  channel.onmessage = (evt) => {
+    if (evt.type === "code") handlers.onCode(evt.userCode, evt.verificationUri, evt.expiresIn);
+    else if (evt.type === "done") handlers.onDone();
+    else if (evt.type === "error") handlers.onError(evt.message);
+  };
+  await invoke("github_login", { onEvent: channel });
+}
+
+/** List repositories the connected GitHub account can access. */
+export async function githubListRepos(): Promise<Repo[]> {
+  if (isTauri()) return ipc<Repo[]>("github_list_repos");
+  throw new Error("GitHub is only available in the desktop app.");
+}
+
+/** Clone + index a repository into the RAG store (desktop app only). */
+export async function githubIndexRepo(
+  fullName: string,
+  handlers: GithubIndexHandlers,
+): Promise<void> {
+  if (!isTauri()) {
+    handlers.onError("Indexing a repository is only available in the desktop app.");
+    return;
+  }
+  const { invoke, Channel } = await import("@tauri-apps/api/core");
+  const channel = new Channel<IndexEvent>();
+  channel.onmessage = (evt) => {
+    if (evt.type === "status") handlers.onStatus(evt.message);
+    else if (evt.type === "progress") handlers.onProgress(evt.done, evt.total, evt.fraction);
+    else if (evt.type === "done") handlers.onDone(evt.count);
+    else if (evt.type === "error") handlers.onError(evt.message);
+  };
+  await invoke("github_index_repo", { fullName, onEvent: channel });
+}
+
+/** Placeholder the Rust core sends in place of a stored secret; sending it back
+ *  verbatim means "keep the existing value". Mirrors config.rs SECRET_SENTINEL. */
+export const SECRET_SENTINEL = "__libbie_saved__";
 
 export { DEV_BASE_URL };
