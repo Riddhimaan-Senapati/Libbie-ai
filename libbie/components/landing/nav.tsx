@@ -9,9 +9,10 @@ import { Logo } from "@/components/Logo";
 import { brand } from "@/lib/data";
 
 const NAV_LINKS: { label: string; href: string }[] = [
-  { label: "Meet Libbie", href: "#meet" },
   { label: "How she answers", href: "#how" },
-  { label: "Air-gapped", href: "#air-gapped" },
+  { label: "Sources", href: "#sources" },
+  { label: "Graph", href: "#graph" },
+  { label: "Runs your way", href: "#runs" },
   { label: "Pricing", href: "#pricing" },
 ];
 
@@ -21,7 +22,7 @@ function AnnouncementBar() {
     <div className="w-full bg-accent text-foreground">
       <div className="mx-auto flex max-w-6xl items-center justify-center gap-2 px-5 py-2 text-center text-xs sm:px-8 sm:text-sm">
         <span className="text-foreground/80">
-          Libbie now reconstructs intent across code + conversations.
+          Libbie now indexes your GitHub, Slack, and email into one provenance graph.
         </span>
         <Link
           href="/demo"

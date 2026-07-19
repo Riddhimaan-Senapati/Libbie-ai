@@ -7,27 +7,28 @@ import { localAnswer } from "@/lib/data";
 import { Reveal, SectionHeading } from "@/components/landing/reveal";
 
 const GUARANTEES: string[] = [
-  "Fully local inference, so Libbie answers on-device",
-  "Air-gapped deployment for regulated pharma & biotech",
-  "Your code and conversations never leave your environment",
-  "Full, traceable provenance for every decision she recovers",
+  "Local models by default (llama.cpp, or vLLM on Linux + NVIDIA), with no network egress",
+  "Or bring your own key for OpenAI-compatible providers and Anthropic",
+  "Download a chat model straight from Hugging Face, inside the app",
+  "A running count of tokens per call and session, with an estimated cost for cloud models",
+  "Air-gapped deployment for regulated pharma and biotech, where data can't leave the building",
 ];
 
 const LOCAL = localAnswer();
 
-/** She works air-gapped — the premium, regulated tier. */
+/** Runs your way: local by default, or any cloud provider you point her at. */
 export function AirGapped() {
   return (
-    <section id="air-gapped" className="relative overflow-hidden border-t border-border py-24 sm:py-28">
+    <section id="runs" className="relative overflow-hidden border-t border-border py-24 sm:py-28">
       <div className="pointer-events-none absolute right-0 top-0 -z-10 h-[400px] w-[400px] glow-primary opacity-50" aria-hidden />
 
       <div className="mx-auto grid max-w-6xl grid-cols-1 items-center gap-12 px-5 sm:px-8 lg:grid-cols-2">
         <Reveal>
           <div>
             <SectionHeading
-              eyebrow="Air-gapped"
-              title="She works where data can't leave the building."
-              description="For regulated pharma and biotech R&D, Libbie runs entirely inside your perimeter. She comes to your data; your code and conversations never come to us."
+              eyebrow="Runs your way"
+              title="On your machine, or on any model you choose."
+              description="By default Libbie runs local models with nothing leaving your machine, which is what regulated pharma and biotech R&D need. When you'd rather use a hosted model, point her at any cloud provider with your own key."
             />
             <ul className="mt-8 space-y-3">
               {GUARANTEES.map((g) => (

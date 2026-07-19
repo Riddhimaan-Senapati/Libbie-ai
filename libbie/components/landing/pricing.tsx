@@ -9,15 +9,15 @@ const FREE_FEATURES: string[] = [
   `${freemium.limit} questions answered / month`,
   "Dual-cited code + conversation provenance",
   "Technical & executive answer views",
-  "Single repository, cloud-hosted",
+  "Connect one GitHub repo, Slack, or mailbox",
 ];
 
 const ENTERPRISE_FEATURES: string[] = [
   "Unlimited questions across every pipeline",
-  "On-prem & air-gapped deployment",
-  "Local inference with zero data egress",
-  "Proactive watchlist + one-click handover docs",
-  "SSO, audit logs and priority support",
+  "On-prem and air-gapped, with nothing leaving your machine",
+  "Bring your own model: local, OpenAI-compatible, or Anthropic",
+  "Connect GitHub, Slack, and email; explore the full provenance graph",
+  "Token and cost tracking, with priority support",
 ];
 
 /** Pricing: a Free tier (freemium numbers) and a paid Enterprise / on-prem tier. */
