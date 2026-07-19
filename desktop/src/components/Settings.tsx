@@ -18,6 +18,8 @@ import {
   Check,
   ExternalLink,
   Lock,
+  MessagesSquare as SlackIcon,
+  Mail,
 } from "lucide-react";
 
 import type {
@@ -29,6 +31,8 @@ import type {
   IndexStatus,
   HfFile,
   Repo,
+  SlackChannel,
+  EmailFolder,
 } from "@/lib/tauri";
 import {
   isTauri,
@@ -37,6 +41,14 @@ import {
   githubLogin,
   githubListRepos,
   githubIndexRepo,
+  slackConnect,
+  slackListChannels,
+  slackIndexChannels,
+  emailGmailConnect,
+  emailListLabels,
+  emailImapConnect,
+  emailListMailboxes,
+  emailIndex,
   SECRET_SENTINEL,
 } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
@@ -1122,6 +1134,24 @@ export function Settings({
         )}
       </section>
 
+      {/* Slack: connect an account and index channels into the RAG store */}
+      <SlackConnector
+        offline={!!draft.offline_mode}
+        initialConnected={!!config.slack_token}
+        embedStatus={embedStatus}
+        onStartEmbed={onStartEmbed}
+        onRefreshIndex={onRefreshIndex}
+      />
+
+      {/* Email: connect Gmail or an IMAP mailbox and index it into the RAG store */}
+      <EmailConnector
+        offline={!!draft.offline_mode}
+        config={config}
+        embedStatus={embedStatus}
+        onStartEmbed={onStartEmbed}
+        onRefreshIndex={onRefreshIndex}
+      />
+
       <div className="sticky bottom-0 -mx-6 flex items-center justify-end gap-3 border-t border-border bg-background/90 px-6 py-3 backdrop-blur">
         {saved && <span className="text-[12px] text-ok">Saved.</span>}
         <button
@@ -1145,5 +1175,717 @@ function Info({ label, value }: { label: string; value: string }) {
         {value}
       </p>
     </div>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// Connector shared bits (Slack + Email)
+// --------------------------------------------------------------------------- //
+
+type EmbedProps = {
+  embedStatus: EngineStatus;
+  onStartEmbed: () => Promise<EngineStatus | null> | void;
+  onRefreshIndex?: () => void;
+};
+
+type IndexProgress = { active: boolean; message: string; fraction: number; count?: number };
+
+/** Ensure the local embedding engine is up before an index run. Returns an error
+ *  string when it could not be made ready, else null. */
+async function ensureEmbed(
+  embedStatus: EngineStatus,
+  onStartEmbed: EmbedProps["onStartEmbed"],
+): Promise<string | null> {
+  if (embedStatus.healthy) return null;
+  const res = await onStartEmbed();
+  if (res && typeof res === "object" && !res.healthy) {
+    return "The embedding engine isn't ready. Pick an embedding GGUF model above, start it, then index.";
+  }
+  return null;
+}
+
+/** Open the OAuth authorize URL in the browser (best effort) and show a link. */
+function AuthorizePrompt({ url, label }: { url: string; label: string }) {
+  return (
+    <div className="mb-4 rounded-lg border border-primary/30 bg-primary/5 px-3 py-3">
+      <p className="text-[12px] text-foreground">
+        Opening your browser to authorize {label}. If it didn&apos;t open, use this link:
+      </p>
+      <div className="mt-2 flex items-center gap-2">
+        <a
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 break-all font-medium text-primary underline"
+        >
+          Authorize {label}
+          <ExternalLink className="size-3 shrink-0" aria-hidden />
+        </a>
+        <span className="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+          <Loader2 className="size-3 animate-spin" aria-hidden /> Waiting…
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** A filterable, scrollable multi-select checklist. */
+function CheckList({
+  items,
+  selected,
+  onToggle,
+  filter,
+  onFilter,
+  placeholder,
+}: {
+  items: { id: string; label: string; hint?: string }[];
+  selected: Set<string>;
+  onToggle: (id: string) => void;
+  filter: string;
+  onFilter: (v: string) => void;
+  placeholder: string;
+}) {
+  return (
+    <div>
+      <input
+        className={cn(inputCls, "mb-2")}
+        value={filter}
+        onChange={(e) => onFilter(e.target.value)}
+        placeholder={placeholder}
+      />
+      <div className="scroll-soft max-h-48 overflow-y-auto rounded-lg border border-input">
+        {items.length === 0 ? (
+          <p className="px-3 py-2 text-[12px] text-muted-foreground">Nothing to show.</p>
+        ) : (
+          items.map((it) => (
+            <label
+              key={it.id}
+              className="flex cursor-pointer items-center gap-2 border-b border-border/50 px-3 py-1.5 text-[12px] last:border-0 hover:bg-muted/40"
+            >
+              <input
+                type="checkbox"
+                checked={selected.has(it.id)}
+                onChange={() => onToggle(it.id)}
+                className="size-3.5 accent-[var(--primary)]"
+              />
+              <span className="truncate text-foreground">{it.label}</span>
+              {it.hint && <span className="ml-auto text-[10.5px] text-muted-foreground">{it.hint}</span>}
+            </label>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** The "index N selected" action row + progress bar shared by both connectors. */
+function IndexBar({
+  count,
+  idx,
+  onIndex,
+  disabled,
+}: {
+  count: number;
+  idx: IndexProgress | null;
+  onIndex: () => void;
+  disabled: boolean;
+}) {
+  return (
+    <>
+      <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg bg-muted/40 px-3 py-2.5">
+        <Database className="size-4 text-primary" aria-hidden />
+        <span className="text-[12px] text-foreground">
+          {idx?.count != null
+            ? `Indexed ${idx.count} chunks. Ask Libbie a question to chat over them.`
+            : count > 0
+              ? `${count} selected.`
+              : "Select items above to index."}
+        </span>
+        <button
+          type="button"
+          onClick={onIndex}
+          disabled={disabled}
+          className="ml-auto inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-[12px] font-medium text-primary-foreground disabled:opacity-50"
+        >
+          {idx?.active ? (
+            <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          ) : (
+            <Database className="size-3.5" aria-hidden />
+          )}
+          Index selected
+        </button>
+      </div>
+      {idx?.active && (
+        <div className="mt-2">
+          <div className="h-2 overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full bg-primary transition-[width]"
+              style={{ width: `${Math.round(idx.fraction * 100)}%` }}
+            />
+          </div>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {idx.message} {idx.fraction > 0 ? `${Math.round(idx.fraction * 100)}%` : ""}
+          </p>
+        </div>
+      )}
+    </>
+  );
+}
+
+function toggleIn(set: Set<string>, id: string): Set<string> {
+  const next = new Set(set);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  return next;
+}
+
+// --------------------------------------------------------------------------- //
+// Slack connector
+// --------------------------------------------------------------------------- //
+
+function SlackConnector({
+  offline,
+  initialConnected,
+  embedStatus,
+  onStartEmbed,
+  onRefreshIndex,
+}: EmbedProps & { offline: boolean; initialConnected: boolean }) {
+  const [connected, setConnected] = React.useState(initialConnected);
+  const [token, setToken] = React.useState("");
+  const [connecting, setConnecting] = React.useState(false);
+  const [authUrl, setAuthUrl] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const [channels, setChannels] = React.useState<SlackChannel[]>([]);
+  const [loading, setLoading] = React.useState(false);
+  const [filter, setFilter] = React.useState("");
+  const [selected, setSelected] = React.useState<Set<string>>(new Set());
+  const [idx, setIdx] = React.useState<IndexProgress | null>(null);
+
+  const loadChannels = React.useCallback(async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      const list = await slackListChannels();
+      list.sort((a, b) => a.name.localeCompare(b.name));
+      setChannels(list);
+      if (list.length === 0) setError("No channels were returned for this account.");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const connect = async (useToken: boolean) => {
+    if (useToken && !token.trim()) {
+      setError("Paste a Slack user token, or leave it blank to connect via the browser.");
+      return;
+    }
+    setError(null);
+    setAuthUrl(null);
+    setConnecting(true);
+    await slackConnect(useToken ? token.trim() : null, {
+      onUrl: (url) => {
+        setAuthUrl(url);
+        try {
+          window.open(url, "_blank");
+        } catch {
+          /* popup blocked; the link is shown */
+        }
+      },
+      onDone: async () => {
+        setConnecting(false);
+        setAuthUrl(null);
+        setConnected(true);
+        setToken("");
+        await loadChannels();
+      },
+      onError: (message) => {
+        setError(message);
+        setConnecting(false);
+        setAuthUrl(null);
+      },
+    });
+  };
+
+  const filtered = React.useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    const list = q ? channels.filter((c) => c.name.toLowerCase().includes(q)) : channels;
+    return list.slice(0, 400).map((c) => ({
+      id: c.id,
+      label: c.is_im ? c.name : `#${c.name}`,
+      hint: c.is_private && !c.is_im ? "private" : c.is_im ? "dm" : undefined,
+    }));
+  }, [channels, filter]);
+
+  const indexSelected = async () => {
+    setError(null);
+    if (selected.size === 0) {
+      setError("Pick at least one channel to index.");
+      return;
+    }
+    const embedErr = await ensureEmbed(embedStatus, onStartEmbed);
+    if (embedErr) {
+      setError(embedErr);
+      return;
+    }
+    setIdx({ active: true, message: "Starting…", fraction: 0 });
+    await slackIndexChannels([...selected], {
+      onStatus: (message) => setIdx((s) => ({ active: true, message, fraction: s?.fraction ?? 0 })),
+      onProgress: (_d, _t, fraction) =>
+        setIdx({ active: true, message: "Embedding messages…", fraction }),
+      onDone: (count) => {
+        setIdx({ active: false, message: `Indexed ${count} chunks.`, fraction: 1, count });
+        onRefreshIndex?.();
+      },
+      onError: (message) => {
+        setError(message);
+        setIdx(null);
+      },
+    });
+  };
+
+  return (
+    <section className="panel mb-5 rounded-xl p-4">
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="flex items-center gap-2 text-[13px] font-semibold">
+          <SlackIcon className="size-4 text-primary" aria-hidden /> Connect Slack &amp; index channels
+        </h2>
+        {connected && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-ok/10 px-2 py-0.5 text-[10.5px] font-medium text-ok">
+            <Check className="size-3" aria-hidden /> Connected
+          </span>
+        )}
+      </div>
+
+      {offline ? (
+        <p className="rounded-lg bg-muted/50 px-3 py-2 text-[12px] text-muted-foreground">
+          Slack access is disabled in strict air-gapped mode. Turn off air-gap above to connect your
+          account and index conversations.
+        </p>
+      ) : (
+        <>
+          <p className="mb-3 text-[12px] text-muted-foreground">
+            Paste a Slack user token (<span className="font-mono">xoxp-…</span>) or connect via
+            OAuth, pick channels/DMs, and index them into the local vector store to chat over them.
+            Your token stays in the Rust core.
+          </p>
+
+          {!connected && (
+            <div className="mb-4 grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end">
+              <Field
+                label="User token (optional)"
+                hint="Paste xoxp-… to connect instantly, or leave blank and use Connect via OAuth."
+              >
+                <input
+                  type="password"
+                  className={inputCls}
+                  value={token}
+                  onChange={(e) => setToken(e.target.value)}
+                  placeholder="xoxp-…"
+                />
+              </Field>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => connect(true)}
+                  disabled={connecting}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-[12px] font-medium text-primary-foreground disabled:opacity-50"
+                >
+                  {connecting ? (
+                    <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                  ) : (
+                    <SlackIcon className="size-3.5" aria-hidden />
+                  )}
+                  Use token
+                </button>
+                <button
+                  type="button"
+                  onClick={() => connect(false)}
+                  disabled={connecting}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-primary/40 px-3 py-2 text-[12px] font-medium text-primary disabled:opacity-50"
+                >
+                  Connect via OAuth
+                </button>
+              </div>
+            </div>
+          )}
+
+          {connected && (
+            <div className="mb-4 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={loadChannels}
+                disabled={loading}
+                className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-2 text-[12px] font-medium text-muted-foreground hover:text-foreground disabled:opacity-50"
+              >
+                {loading ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
+                Refresh channels
+              </button>
+            </div>
+          )}
+
+          {authUrl && <AuthorizePrompt url={authUrl} label="Slack" />}
+
+          {connected && channels.length > 0 && (
+            <div className="grid gap-3">
+              <Field label="Channels &amp; DMs" hint="Select the conversations to index.">
+                <CheckList
+                  items={filtered}
+                  selected={selected}
+                  onToggle={(id) => setSelected((s) => toggleIn(s, id))}
+                  filter={filter}
+                  onFilter={setFilter}
+                  placeholder="Filter channels…"
+                />
+              </Field>
+              <IndexBar
+                count={selected.size}
+                idx={idx}
+                onIndex={indexSelected}
+                disabled={idx?.active || selected.size === 0}
+              />
+            </div>
+          )}
+        </>
+      )}
+      {error && (
+        <p className="mt-2 rounded-lg bg-danger/10 px-3 py-2 text-[11px] text-danger">{error}</p>
+      )}
+    </section>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// Email connector (Gmail OAuth + IMAP)
+// --------------------------------------------------------------------------- //
+
+function EmailConnector({
+  offline,
+  config,
+  embedStatus,
+  onStartEmbed,
+  onRefreshIndex,
+}: EmbedProps & { offline: boolean; config: AppConfig }) {
+  const [source, setSource] = React.useState<"gmail" | "imap">("gmail");
+  const [error, setError] = React.useState<string | null>(null);
+  const [idx, setIdx] = React.useState<IndexProgress | null>(null);
+  const [filter, setFilter] = React.useState("");
+  const [selected, setSelected] = React.useState<Set<string>>(new Set());
+  const [folders, setFolders] = React.useState<EmailFolder[]>([]);
+
+  // Gmail
+  const [gmConnected, setGmConnected] = React.useState(!!config.gmail_token);
+  const [gmConnecting, setGmConnecting] = React.useState(false);
+  const [gmUrl, setGmUrl] = React.useState<string | null>(null);
+
+  // IMAP
+  const [imHost, setImHost] = React.useState(config.imap_host);
+  const [imPort, setImPort] = React.useState(config.imap_port || 993);
+  const [imUser, setImUser] = React.useState(config.imap_user);
+  const [imPass, setImPass] = React.useState("");
+  const [imConnected, setImConnected] = React.useState(!!config.imap_password);
+  const [imBusy, setImBusy] = React.useState(false);
+
+  const connected = source === "gmail" ? gmConnected : imConnected;
+
+  const reset = () => {
+    setSelected(new Set());
+    setFolders([]);
+    setFilter("");
+    setIdx(null);
+    setError(null);
+  };
+
+  const switchSource = (s: "gmail" | "imap") => {
+    setSource(s);
+    reset();
+  };
+
+  const loadLabels = React.useCallback(async () => {
+    setError(null);
+    try {
+      const list = await emailListLabels();
+      list.sort((a, b) => a.name.localeCompare(b.name));
+      setFolders(list);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  const connectGmail = async () => {
+    setError(null);
+    setGmUrl(null);
+    setGmConnecting(true);
+    await emailGmailConnect({
+      onUrl: (url) => {
+        setGmUrl(url);
+        try {
+          window.open(url, "_blank");
+        } catch {
+          /* popup blocked; link is shown */
+        }
+      },
+      onDone: async () => {
+        setGmConnecting(false);
+        setGmUrl(null);
+        setGmConnected(true);
+        await loadLabels();
+      },
+      onError: (message) => {
+        setError(message);
+        setGmConnecting(false);
+        setGmUrl(null);
+      },
+    });
+  };
+
+  const refreshMailboxes = React.useCallback(async () => {
+    setError(null);
+    try {
+      const boxes = await emailListMailboxes();
+      boxes.sort((a, b) => a.name.localeCompare(b.name));
+      setFolders(boxes);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  const connectImap = async () => {
+    setError(null);
+    if (!imHost.trim() || !imUser.trim()) {
+      setError("Enter the IMAP host and username.");
+      return;
+    }
+    setImBusy(true);
+    try {
+      const boxes = await emailImapConnect(
+        imHost.trim(),
+        imPort,
+        imUser.trim(),
+        imPass || SECRET_SENTINEL,
+      );
+      boxes.sort((a, b) => a.name.localeCompare(b.name));
+      setFolders(boxes);
+      setImConnected(true);
+      setImPass("");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setImBusy(false);
+    }
+  };
+
+  const items = React.useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    const list = q ? folders.filter((f) => f.name.toLowerCase().includes(q)) : folders;
+    return list.slice(0, 400).map((f) => ({ id: f.id, label: f.name }));
+  }, [folders, filter]);
+
+  const indexSelected = async () => {
+    setError(null);
+    // Gmail with nothing selected indexes across all mail; IMAP needs a mailbox.
+    if (source === "imap" && selected.size === 0) {
+      setError("Pick at least one mailbox to index.");
+      return;
+    }
+    const embedErr = await ensureEmbed(embedStatus, onStartEmbed);
+    if (embedErr) {
+      setError(embedErr);
+      return;
+    }
+    setIdx({ active: true, message: "Starting…", fraction: 0 });
+    await emailIndex(source, [...selected], {
+      onStatus: (message) => setIdx((s) => ({ active: true, message, fraction: s?.fraction ?? 0 })),
+      onProgress: (_d, _t, fraction) =>
+        setIdx({ active: true, message: "Embedding messages…", fraction }),
+      onDone: (count) => {
+        setIdx({ active: false, message: `Indexed ${count} chunks.`, fraction: 1, count });
+        onRefreshIndex?.();
+      },
+      onError: (message) => {
+        setError(message);
+        setIdx(null);
+      },
+    });
+  };
+
+  return (
+    <section className="panel mb-5 rounded-xl p-4">
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="flex items-center gap-2 text-[13px] font-semibold">
+          <Mail className="size-4 text-primary" aria-hidden /> Connect Email &amp; index messages
+        </h2>
+        {connected && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-ok/10 px-2 py-0.5 text-[10.5px] font-medium text-ok">
+            <Check className="size-3" aria-hidden /> Connected
+          </span>
+        )}
+      </div>
+
+      {offline ? (
+        <p className="rounded-lg bg-muted/50 px-3 py-2 text-[12px] text-muted-foreground">
+          Email access is disabled in strict air-gapped mode. Turn off air-gap above to connect
+          Gmail or an IMAP mailbox and index it.
+        </p>
+      ) : (
+        <>
+          <div className="mb-3">
+            <div className="inline-flex rounded-lg border border-border p-0.5 text-[12px]">
+              <button
+                type="button"
+                onClick={() => switchSource("gmail")}
+                className={cn(
+                  "rounded-md px-3 py-1 font-medium",
+                  source === "gmail" ? "bg-primary text-primary-foreground" : "text-muted-foreground",
+                )}
+              >
+                Gmail
+              </button>
+              <button
+                type="button"
+                onClick={() => switchSource("imap")}
+                className={cn(
+                  "rounded-md px-3 py-1 font-medium",
+                  source === "imap" ? "bg-primary text-primary-foreground" : "text-muted-foreground",
+                )}
+              >
+                IMAP
+              </button>
+            </div>
+          </div>
+
+          {source === "gmail" ? (
+            <>
+              <p className="mb-3 text-[12px] text-muted-foreground">
+                Authorize Gmail (read-only) via the browser; the token stays in the Rust core. Pick
+                labels (or none for all mail) and index them.
+              </p>
+              {!gmConnected ? (
+                <button
+                  type="button"
+                  onClick={connectGmail}
+                  disabled={gmConnecting}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-[12px] font-medium text-primary-foreground disabled:opacity-50"
+                >
+                  {gmConnecting ? (
+                    <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                  ) : (
+                    <Mail className="size-3.5" aria-hidden />
+                  )}
+                  Connect Gmail
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={loadLabels}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-2 text-[12px] font-medium text-muted-foreground hover:text-foreground"
+                >
+                  Refresh labels
+                </button>
+              )}
+              {gmUrl && <AuthorizePrompt url={gmUrl} label="Gmail" />}
+            </>
+          ) : (
+            <>
+              <p className="mb-3 text-[12px] text-muted-foreground">
+                Connect any mailbox over IMAP with an app password (kept in the Rust core). Pick
+                mailboxes and index them.
+              </p>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="IMAP host" hint="e.g. imap.gmail.com">
+                  <input
+                    className={inputCls}
+                    value={imHost}
+                    onChange={(e) => setImHost(e.target.value)}
+                    placeholder="imap.example.com"
+                  />
+                </Field>
+                <Field label="Port">
+                  <input
+                    type="number"
+                    className={inputCls}
+                    value={imPort}
+                    onChange={(e) => setImPort(Number(e.target.value) || 993)}
+                  />
+                </Field>
+                <Field label="Username">
+                  <input
+                    className={inputCls}
+                    value={imUser}
+                    onChange={(e) => setImUser(e.target.value)}
+                    placeholder="you@example.com"
+                  />
+                </Field>
+                <Field label="App password" hint="Kept in the Rust core; never sent back to the UI.">
+                  <input
+                    type="password"
+                    className={inputCls}
+                    value={imPass}
+                    onChange={(e) => setImPass(e.target.value)}
+                    placeholder={imConnected ? "•••• saved. Blank keeps it." : "app password"}
+                  />
+                </Field>
+              </div>
+              <div className="mt-3 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={connectImap}
+                  disabled={imBusy}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-[12px] font-medium text-primary-foreground disabled:opacity-50"
+                >
+                  {imBusy ? (
+                    <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                  ) : (
+                    <Mail className="size-3.5" aria-hidden />
+                  )}
+                  {imConnected ? "Reconnect & list mailboxes" : "Connect mailbox"}
+                </button>
+                {imConnected && (
+                  <button
+                    type="button"
+                    onClick={refreshMailboxes}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-2 text-[12px] font-medium text-muted-foreground hover:text-foreground"
+                  >
+                    Refresh mailboxes
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+
+          {connected && folders.length > 0 && (
+            <div className="mt-4 grid gap-3">
+              <Field
+                label={source === "gmail" ? "Labels" : "Mailboxes"}
+                hint={
+                  source === "gmail"
+                    ? "Select labels to index (none = all mail)."
+                    : "Select mailboxes to index."
+                }
+              >
+                <CheckList
+                  items={items}
+                  selected={selected}
+                  onToggle={(id) => setSelected((s) => toggleIn(s, id))}
+                  filter={filter}
+                  onFilter={setFilter}
+                  placeholder={source === "gmail" ? "Filter labels…" : "Filter mailboxes…"}
+                />
+              </Field>
+              <IndexBar
+                count={selected.size}
+                idx={idx}
+                onIndex={indexSelected}
+                disabled={idx?.active || (source === "imap" && selected.size === 0)}
+              />
+            </div>
+          )}
+        </>
+      )}
+      {error && (
+        <p className="mt-2 rounded-lg bg-danger/10 px-3 py-2 text-[11px] text-danger">{error}</p>
+      )}
+    </section>
   );
 }

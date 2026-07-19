@@ -46,6 +46,10 @@ pub enum AppError {
     InvalidInput { message: String },
     /// A GitHub integration operation (device flow, repo listing, clone) failed.
     Github { message: String },
+    /// A Slack connector operation (auth, OAuth, listing, history) failed.
+    Slack { message: String },
+    /// An email connector operation (Gmail OAuth/REST, IMAP) failed.
+    Email { message: String },
 }
 
 impl AppError {
@@ -65,7 +69,9 @@ impl AppError {
             | AppError::VectorStore { message }
             | AppError::Config { message }
             | AppError::InvalidInput { message }
-            | AppError::Github { message } => message,
+            | AppError::Github { message }
+            | AppError::Slack { message }
+            | AppError::Email { message } => message,
         }
     }
 
@@ -112,6 +118,12 @@ impl AppError {
     }
     pub fn github(m: impl Into<String>) -> Self {
         AppError::Github { message: m.into() }
+    }
+    pub fn slack(m: impl Into<String>) -> Self {
+        AppError::Slack { message: m.into() }
+    }
+    pub fn email(m: impl Into<String>) -> Self {
+        AppError::Email { message: m.into() }
     }
 }
 

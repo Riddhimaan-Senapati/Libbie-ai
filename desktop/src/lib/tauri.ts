@@ -41,6 +41,19 @@ export interface AppConfig {
   // GitHub integration (OAuth device flow)
   github_token: string | null;
   github_client_id: string;
+  // Slack connector
+  slack_token: string | null;
+  slack_client_id: string;
+  slack_client_secret: string | null;
+  // Email: Gmail (OAuth)
+  gmail_token: string | null;
+  gmail_client_id: string;
+  gmail_client_secret: string | null;
+  // Email: IMAP (app password)
+  imap_host: string;
+  imap_port: number;
+  imap_user: string;
+  imap_password: string | null;
 }
 
 export interface HardwareInfo {
@@ -117,7 +130,10 @@ export type AppErrorKind =
   | "vectorStoreUnavailable"
   | "vectorStore"
   | "config"
-  | "invalidInput";
+  | "invalidInput"
+  | "github"
+  | "slack"
+  | "email";
 
 /** A structured error thrown (rejected) by a Tauri command invocation. */
 export interface AppError {
@@ -217,6 +233,16 @@ function devConfig(): AppConfig {
     anthropic_model: "claude-sonnet-5",
     github_token: null,
     github_client_id: "",
+    slack_token: null,
+    slack_client_id: "",
+    slack_client_secret: null,
+    gmail_token: null,
+    gmail_client_id: "",
+    gmail_client_secret: null,
+    imap_host: "",
+    imap_port: 993,
+    imap_user: "",
+    imap_password: null,
   };
   return stored ? { ...base, ...JSON.parse(stored) } : base;
 }
@@ -531,6 +557,21 @@ export async function vectorSearch(
 }
 
 // ---------------------------------------------------------------------------
+// Provenance graph — read a `libbie join` graph.json chosen by the user
+// ---------------------------------------------------------------------------
+
+/**
+ * Open a native file picker (IN the Rust core) and return the chosen graph
+ * JSON's contents, or null if cancelled. The path is chosen by the user in the
+ * OS dialog and never supplied by the (untrusted) webview, so this can't be
+ * abused to read arbitrary files. Plain local read; works in air-gapped mode.
+ */
+export async function openGraphJson(): Promise<string | null> {
+  if (isTauri()) return ipc<string | null>("open_graph_json");
+  throw new Error("Loading a graph file is only available in the desktop app.");
+}
+
+// ---------------------------------------------------------------------------
 // HuggingFace model download
 // ---------------------------------------------------------------------------
 
@@ -685,6 +726,162 @@ export async function githubIndexRepo(
     else if (evt.type === "error") handlers.onError(evt.message);
   };
   await invoke("github_index_repo", { fullName, onEvent: channel });
+}
+
+// ---------------------------------------------------------------------------
+// Slack + Email connectors (OAuth loopback / token / IMAP + message indexing)
+// ---------------------------------------------------------------------------
+
+/** A Slack conversation the token can read (mirrors Rust `SlackChannel`). */
+export interface SlackChannel {
+  id: string;
+  name: string;
+  is_private: boolean;
+  is_im: boolean;
+}
+
+/** A Gmail label or IMAP mailbox (mirrors Rust `EmailFolder`). */
+export interface EmailFolder {
+  id: string;
+  name: string;
+}
+
+/** OAuth-style connect events (mirrors Rust `ConnectEvent`). */
+export type ConnectEvent =
+  | { type: "url"; url: string }
+  | { type: "done" }
+  | { type: "error"; message: string };
+
+export interface ConnectHandlers {
+  /** The URL to open in the browser to authorize; the loopback catches the code. */
+  onUrl: (url: string) => void;
+  onDone: () => void;
+  onError: (message: string) => void;
+}
+
+/** Progress handlers for a message-indexing run (shared shape with GitHub). */
+export type IndexHandlers = GithubIndexHandlers;
+
+function connectViaChannel(
+  cmd: string,
+  args: Record<string, unknown>,
+  handlers: ConnectHandlers,
+): Promise<void> {
+  return (async () => {
+    const { invoke, Channel } = await import("@tauri-apps/api/core");
+    const channel = new Channel<ConnectEvent>();
+    channel.onmessage = (evt) => {
+      if (evt.type === "url") handlers.onUrl(evt.url);
+      else if (evt.type === "done") handlers.onDone();
+      else if (evt.type === "error") handlers.onError(evt.message);
+    };
+    await invoke(cmd, { ...args, onEvent: channel });
+  })();
+}
+
+function indexViaChannel(
+  cmd: string,
+  args: Record<string, unknown>,
+  handlers: IndexHandlers,
+): Promise<void> {
+  return (async () => {
+    const { invoke, Channel } = await import("@tauri-apps/api/core");
+    const channel = new Channel<IndexEvent>();
+    channel.onmessage = (evt) => {
+      if (evt.type === "status") handlers.onStatus(evt.message);
+      else if (evt.type === "progress") handlers.onProgress(evt.done, evt.total, evt.fraction);
+      else if (evt.type === "done") handlers.onDone(evt.count);
+      else if (evt.type === "error") handlers.onError(evt.message);
+    };
+    await invoke(cmd, { ...args, onEvent: channel });
+  })();
+}
+
+/**
+ * Connect Slack. Pass a pasted user token to validate + store it, or omit it to
+ * run the OAuth loopback flow (`onUrl` fires with the authorize URL to open).
+ * Desktop app only — tokens and the loopback live in the Rust core.
+ */
+export async function slackConnect(
+  token: string | null,
+  handlers: ConnectHandlers,
+): Promise<void> {
+  if (!isTauri()) {
+    handlers.onError("Connecting Slack is only available in the desktop app.");
+    return;
+  }
+  await connectViaChannel("slack_connect", { token: token ?? null }, handlers);
+}
+
+/** List Slack conversations the connected account can read. */
+export async function slackListChannels(): Promise<SlackChannel[]> {
+  if (isTauri()) return ipc<SlackChannel[]>("slack_list_channels");
+  throw new Error("Slack is only available in the desktop app.");
+}
+
+/** Index the selected Slack channels into the RAG store (desktop app only). */
+export async function slackIndexChannels(
+  ids: string[],
+  handlers: IndexHandlers,
+): Promise<void> {
+  if (!isTauri()) {
+    handlers.onError("Indexing Slack is only available in the desktop app.");
+    return;
+  }
+  await indexViaChannel("slack_index_channels", { ids }, handlers);
+}
+
+/** Connect Gmail via the OAuth loopback (`onUrl` fires with the consent URL). */
+export async function emailGmailConnect(handlers: ConnectHandlers): Promise<void> {
+  if (!isTauri()) {
+    handlers.onError("Connecting Gmail is only available in the desktop app.");
+    return;
+  }
+  await connectViaChannel("email_gmail_connect", {}, handlers);
+}
+
+/** List Gmail labels for the connected account. */
+export async function emailListLabels(): Promise<EmailFolder[]> {
+  if (isTauri()) return ipc<EmailFolder[]>("email_list_labels");
+  throw new Error("Gmail is only available in the desktop app.");
+}
+
+/**
+ * Store IMAP credentials and verify them (returns the mailbox list on success).
+ * A blank/sentinel password keeps the stored one. Desktop app only.
+ */
+export async function emailImapConnect(
+  host: string,
+  port: number,
+  user: string,
+  password: string | null,
+): Promise<EmailFolder[]> {
+  if (isTauri()) {
+    return ipc<EmailFolder[]>("email_imap_connect", { host, port, user, password });
+  }
+  throw new Error("IMAP is only available in the desktop app.");
+}
+
+/** List mailboxes using the stored IMAP credentials. */
+export async function emailListMailboxes(): Promise<EmailFolder[]> {
+  if (isTauri()) return ipc<EmailFolder[]>("email_list_mailboxes");
+  throw new Error("IMAP is only available in the desktop app.");
+}
+
+/**
+ * Index the selected email folders into the RAG store. `source` is "gmail"
+ * (labels) or "imap" (mailboxes). Desktop app only.
+ */
+export async function emailIndex(
+  source: "gmail" | "imap",
+  folders: string[],
+  handlers: IndexHandlers,
+): Promise<void> {
+  if (!isTauri()) {
+    handlers.onError("Indexing email is only available in the desktop app.");
+    return;
+  }
+  await indexViaChannel("email_index", { source, folders }, handlers);
 }
 
 /** Placeholder the Rust core sends in place of a stored secret; sending it back

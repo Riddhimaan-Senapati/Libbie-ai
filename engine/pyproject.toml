@@ -35,6 +35,18 @@ git = ["GitPython>=3.1"]
 # Optional local embedding model if no OpenAI-compatible endpoint is available.
 # sentence-transformers is Apache-2.0.
 embed = ["sentence-transformers>=2.7"]
+# Live Slack + Gmail connectors. ALL PERMISSIVE:
+#   slack_sdk              MIT       - Slack Web API client (built-in pagination + retry)
+#   google-auth            Apache-2  - Google OAuth credentials
+#   google-auth-oauthlib   Apache-2  - InstalledAppFlow loopback (browser + PKCE)
+#   google-api-python-client Apache-2 - Gmail REST client
+# IMAP uses only the stdlib (imaplib + email), so it needs none of these.
+connectors = [
+    "slack_sdk>=3.27",
+    "google-auth>=2.30",
+    "google-auth-oauthlib>=1.2",
+    "google-api-python-client>=2.130",
+]
 dev = ["pytest>=8.0"]
 
 [project.scripts]

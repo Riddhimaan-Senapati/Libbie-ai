@@ -14,16 +14,17 @@ const FOOTER_LINKS: { heading: string; links: { label: string; href: string }[] 
   {
     heading: "Product",
     links: [
-      { label: "Meet Libbie", href: "#meet" },
       { label: "How she answers", href: "#how" },
+      { label: "Sources", href: "#sources" },
+      { label: "Provenance graph", href: "#graph" },
       { label: "Pricing", href: "#pricing" },
     ],
   },
   {
     heading: "Deployment",
     links: [
-      { label: "Air-gapped", href: "#air-gapped" },
-      { label: "On-prem", href: "#air-gapped" },
+      { label: "Runs your way", href: "#runs" },
+      { label: "Local & air-gapped", href: "#runs" },
       { label: "Meet Libbie", href: "/demo" },
     ],
   },

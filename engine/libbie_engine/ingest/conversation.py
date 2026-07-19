@@ -28,12 +28,13 @@ unreadable files are tolerated so one bad artifact never sinks the whole ingest.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from email import policy
 from email.parser import BytesParser
 from email.utils import getaddresses, parsedate_to_datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Mapping, Optional
 
 from ..models import Message, Node, Provenance, make_id
 from .base import person_node
@@ -198,6 +199,80 @@ def _ingest_slack(
 
 
 # --------------------------------------------------------------------------- #
+# Email thread-root reconstruction (pure; shared with the live email connector)
+# --------------------------------------------------------------------------- #
+# An email carries three threading headers: its own ``Message-ID``, the
+# ``In-Reply-To`` of the message it answers, and a ``References`` list of every
+# ancestor (oldest first). To make a whole reply chain cluster into ONE thread we
+# must group by the *root* message id, not by each message's own id. These helpers
+# are pure (no I/O) so they are trivially unit-testable and reusable by the live
+# Gmail/IMAP connector in ``libbie_engine.email_ingest``.
+_MSGID_RE = re.compile(r"<[^<>@\s]+@[^<>@\s]+>|<[^<>\s]+>")
+
+
+def normalize_message_id(raw: Optional[str]) -> Optional[str]:
+    """Return the first ``<...>`` token from a header value, else the stripped
+    text, else ``None``. Message-ID / In-Reply-To / References all use the same
+    ``<local@host>`` token, so normalizing identically lets them match."""
+    if not raw:
+        return None
+    m = _MSGID_RE.search(str(raw))
+    if m:
+        return m.group(0)
+    text = str(raw).strip()
+    return text or None
+
+
+def parse_references(raw: Optional[str]) -> list[str]:
+    """Extract every ``<...>`` id from a ``References`` header, in order."""
+    if not raw:
+        return []
+    return _MSGID_RE.findall(str(raw))
+
+
+def immediate_parent(
+    in_reply_to: Optional[str], references: Optional[str]
+) -> Optional[str]:
+    """The id of the message this one directly answers: ``In-Reply-To`` when
+    present, else the LAST (most recent) id in ``References``, else ``None``."""
+    parent = normalize_message_id(in_reply_to)
+    if parent:
+        return parent
+    refs = parse_references(references)
+    return refs[-1] if refs else None
+
+
+def resolve_thread_roots(parents: Mapping[str, Optional[str]]) -> dict[str, str]:
+    """Map every message id to its thread ROOT id.
+
+    ``parents`` maps a message id to the id of the message it directly answers
+    (or ``None`` for a thread starter). We follow parent pointers transitively:
+    a parent that is not itself a key (an ancestor outside this batch) becomes the
+    root, so a reply whose ancestors we never saw still clusters under a stable
+    id. Cycle-safe: a malformed self/loop reference stops at the first repeat.
+    """
+    roots: dict[str, str] = {}
+    for mid in parents:
+        seen: set[str] = set()
+        cur = mid
+        while True:
+            if cur in seen:  # defensive: broken cycle -> treat current as root
+                root = cur
+                break
+            seen.add(cur)
+            par = parents.get(cur)
+            if not par:  # thread starter
+                root = cur
+                break
+            if par not in parents:  # ancestor outside the batch is the root
+                root = par
+                break
+            cur = par
+        roots[mid] = root
+    return roots
+
+
+# --------------------------------------------------------------------------- #
 # .eml email files
 # --------------------------------------------------------------------------- #
 def _first_address(header_value: Optional[str]) -> tuple[Optional[str], Optional[str]]:
@@ -241,18 +316,29 @@ def _eml_body_text(message: Any) -> str:
             return ""
 
 
-def _ingest_eml_file(eml_path: Path, store: "Optional[ArtifactStore]") -> list[Node]:
-    """Parse a single ``.eml`` file into a ``Message`` node plus a ``Person`` for
-    the From header. Returns an empty list if the file cannot be read."""
+def _ingest_eml_file(
+    eml_path: Path, store: "Optional[ArtifactStore]"
+) -> tuple[list[Node], Optional[Message], str, Optional[str]]:
+    """Parse a single ``.eml`` file.
+
+    Returns ``(nodes, message_node, own_id, parent_id)`` where ``nodes`` holds the
+    ``Message`` (and a ``Person`` for the From header) and ``own_id`` / ``parent_id``
+    are this message's threading identity, used by the caller's thread-root
+    post-pass to set ``thread_id`` to the resolved root. Returns
+    ``([], None, "", None)`` if the file cannot be read/parsed.
+
+    ``thread_id`` is set to this message's OWN id here as a safe default; the
+    caller overwrites it with the resolved root once the whole batch is known.
+    """
     try:
         raw_bytes = eml_path.read_bytes()
     except OSError:
-        return []
+        return [], None, "", None
 
     try:
         message = BytesParser(policy=policy.default).parsebytes(raw_bytes)
     except Exception:  # pragma: no cover - unparseable file
-        return []
+        return [], None, "", None
 
     nodes: list[Node] = []
 
@@ -268,9 +354,15 @@ def _ingest_eml_file(eml_path: Path, store: "Optional[ArtifactStore]") -> list[N
         except (TypeError, ValueError):
             ts = None
 
-    # Thread identity: prefer Message-ID, fall back to In-Reply-To.
-    thread_id = message.get("Message-ID") or message.get("In-Reply-To")
-    thread_id = str(thread_id) if thread_id else None
+    # Threading identity. ``own_id`` is the message's own Message-ID (or, absent
+    # one, a path-derived synthetic so it still de-duplicates and participates in
+    # root resolution). ``parent_id`` is the message it answers (In-Reply-To else
+    # last References). If there are NO threading headers at all we leave the
+    # thread ungrouped (thread_id stays None -- single-file behavior).
+    own_id = normalize_message_id(message.get("Message-ID"))
+    parent_id = immediate_parent(message.get("In-Reply-To"), message.get("References"))
+    has_headers = bool(own_id or parent_id or message.get("References"))
+    key = own_id or f"path:{eml_path}"
 
     body = _eml_body_text(message)
     text = f"{subject}\n{body}" if subject else body
@@ -284,23 +376,22 @@ def _ingest_eml_file(eml_path: Path, store: "Optional[ArtifactStore]") -> list[N
     )
 
     # Message id: Message-ID is globally unique; else fall back to path.
-    mid = make_id("message", "eml", thread_id or str(eml_path))
-    nodes.append(
-        Message(
-            id=mid,
-            ts=ts,
-            author=from_email or from_name,
-            channel=None,  # email has no channel concept
-            thread_id=thread_id,
-            text=text,
-            provenance=Provenance(
-                source="eml",
-                path=str(eml_path),
-                hash=blob_hash,
-                actor=from_email or from_name,
-            ),
-        )
+    mid = make_id("message", "eml", own_id or str(eml_path))
+    msg_node = Message(
+        id=mid,
+        ts=ts,
+        author=from_email or from_name,
+        channel=None,  # email has no channel concept
+        thread_id=key if has_headers else None,
+        text=text,
+        provenance=Provenance(
+            source="eml",
+            path=str(eml_path),
+            hash=blob_hash,
+            actor=from_email or from_name,
+        ),
     )
+    nodes.append(msg_node)
 
     # Person from the From header (skip if we learned nothing about them).
     if from_email or from_name:
@@ -313,7 +404,7 @@ def _ingest_eml_file(eml_path: Path, store: "Optional[ArtifactStore]") -> list[N
             )
         )
 
-    return nodes
+    return nodes, (msg_node if has_headers else None), key, parent_id
 
 
 # --------------------------------------------------------------------------- #
@@ -353,8 +444,23 @@ def ingest_conversations(
         nodes.extend(_ingest_slack(slack_dir, store))
 
     # 2) Every .eml under conv_dir (recursively) ---------------------------- #
+    #    Parse each file, then run a thread-root post-pass: a reply chain must
+    #    cluster into ONE thread, so ``thread_id`` is set to the resolved ROOT
+    #    message id (not each message's own Message-ID).
+    eml_msgs: list[tuple[Message, str]] = []  # (node, own key)
+    parents: dict[str, Optional[str]] = {}
     for eml_path in sorted(conv_path.rglob("*.eml")):
-        if eml_path.is_file():
-            nodes.extend(_ingest_eml_file(eml_path, store))
+        if not eml_path.is_file():
+            continue
+        file_nodes, msg_node, key, parent_id = _ingest_eml_file(eml_path, store)
+        nodes.extend(file_nodes)
+        if msg_node is not None:  # had threading headers -> participates in roots
+            eml_msgs.append((msg_node, key))
+            parents[key] = parent_id
+
+    if parents:
+        roots = resolve_thread_roots(parents)
+        for msg_node, key in eml_msgs:
+            msg_node.thread_id = roots.get(key, key)
 
     return nodes

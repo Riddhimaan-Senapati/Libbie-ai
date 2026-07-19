@@ -110,6 +110,32 @@ pub struct AppConfig {
     /// Registered GitHub OAuth App client id. Empty falls back to the
     /// `LIBBIE_GITHUB_CLIENT_ID` environment variable. Device flow needs no secret.
     pub github_client_id: String,
+
+    // ---- Slack connector --------------------------------------------------
+    /// Slack user token (`xoxp-…`), from token-paste or the OAuth v2 flow.
+    /// Sensitive — never logged, redacted from the webview.
+    pub slack_token: Option<String>,
+    /// Slack app client id (OAuth v2). Empty falls back to `LIBBIE_SLACK_CLIENT_ID`.
+    pub slack_client_id: String,
+    /// Slack app client secret (OAuth v2 only). Sensitive. Empty falls back to
+    /// `LIBBIE_SLACK_CLIENT_SECRET`.
+    pub slack_client_secret: Option<String>,
+
+    // ---- Email: Gmail (OAuth) --------------------------------------------
+    /// Gmail OAuth access token. Sensitive — never logged, redacted.
+    pub gmail_token: Option<String>,
+    /// Gmail OAuth client id. Empty falls back to `LIBBIE_GMAIL_CLIENT_ID`.
+    pub gmail_client_id: String,
+    /// Gmail OAuth client secret (installed-app; not truly secret but still
+    /// redacted). Empty falls back to `LIBBIE_GMAIL_CLIENT_SECRET`.
+    pub gmail_client_secret: Option<String>,
+
+    // ---- Email: IMAP (app password) --------------------------------------
+    pub imap_host: String,
+    pub imap_port: u16,
+    pub imap_user: String,
+    /// IMAP app password. Sensitive — never logged, redacted.
+    pub imap_password: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -142,6 +168,16 @@ impl Default for AppConfig {
             anthropic_model: "claude-sonnet-5".to_string(),
             github_token: None,
             github_client_id: String::new(),
+            slack_token: None,
+            slack_client_id: String::new(),
+            slack_client_secret: None,
+            gmail_token: None,
+            gmail_client_id: String::new(),
+            gmail_client_secret: None,
+            imap_host: String::new(),
+            imap_port: 993,
+            imap_user: String::new(),
+            imap_password: None,
         }
     }
 }
@@ -261,6 +297,11 @@ impl AppConfig {
         c.openai_api_key = mask_secret(&c.openai_api_key);
         c.anthropic_api_key = mask_secret(&c.anthropic_api_key);
         c.github_token = mask_secret(&c.github_token);
+        c.slack_token = mask_secret(&c.slack_token);
+        c.slack_client_secret = mask_secret(&c.slack_client_secret);
+        c.gmail_token = mask_secret(&c.gmail_token);
+        c.gmail_client_secret = mask_secret(&c.gmail_client_secret);
+        c.imap_password = mask_secret(&c.imap_password);
         c
     }
 
@@ -272,6 +313,17 @@ impl AppConfig {
         self.anthropic_api_key =
             merge_secret(self.anthropic_api_key.take(), &current.anthropic_api_key);
         self.github_token = merge_secret(self.github_token.take(), &current.github_token);
+        self.slack_token = merge_secret(self.slack_token.take(), &current.slack_token);
+        self.slack_client_secret = merge_secret(
+            self.slack_client_secret.take(),
+            &current.slack_client_secret,
+        );
+        self.gmail_token = merge_secret(self.gmail_token.take(), &current.gmail_token);
+        self.gmail_client_secret = merge_secret(
+            self.gmail_client_secret.take(),
+            &current.gmail_client_secret,
+        );
+        self.imap_password = merge_secret(self.imap_password.take(), &current.imap_password);
     }
 }
 

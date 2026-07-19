@@ -4,6 +4,8 @@ import { LandingNav } from "@/components/landing/nav";
 import { Hero } from "@/components/landing/hero";
 import { MeetLibbie } from "@/components/landing/problem";
 import { HowSheAnswers } from "@/components/landing/fusion";
+import { Sources } from "@/components/landing/sources";
+import { GraphSection } from "@/components/landing/graph";
 import { AirGapped } from "@/components/landing/on-prem";
 import { Pricing } from "@/components/landing/pricing";
 import { CtaFooter } from "@/components/landing/cta-footer";
@@ -22,6 +24,8 @@ export default function LandingPage() {
         <Hero />
         <MeetLibbie />
         <HowSheAnswers />
+        <Sources />
+        <GraphSection />
         <AirGapped />
         <Pricing />
         <CtaFooter />

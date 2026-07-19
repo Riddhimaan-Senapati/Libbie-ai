@@ -10,10 +10,13 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use crate::config::{self, AppConfig};
+use crate::email::{self, EmailFolder, ImapConfig};
 use crate::engine::{self, EngineChoice, EngineManager, EngineStatus, HardwareInfo};
 use crate::error::AppError;
 use crate::github::{self, Repo};
 use crate::inference::{self, ChatMessage, ChatOptions, StreamEvent};
+use crate::oauth;
+use crate::slack::{self, SlackChannel};
 use crate::vecstore::{Hit, VecStore};
 
 /// Shared application state held by Tauri.
@@ -149,6 +152,47 @@ pub async fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelEntry>, 
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
+}
+
+/// Open the native file picker (IN RUST) and return the chosen `.json` graph's
+/// contents. Returns `None` if the user cancels.
+///
+/// SECURITY: the path is chosen by the user in the OS dialog and never leaves
+/// Rust, so the untrusted webview cannot supply an arbitrary path. (An earlier
+/// design took a `path` argument from JS, which let a compromised webview read
+/// any `.json` on disk — including the app's own `config.json` of plaintext
+/// secrets. Do not reintroduce a path parameter.) Plain local read, no network,
+/// so it works in strict air-gapped mode.
+#[tauri::command]
+pub async fn open_graph_json(app: tauri::AppHandle) -> Result<Option<String>, AppError> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .add_filter("Graph JSON", &["json"])
+        .pick_file(move |picked| {
+            let _ = tx.send(picked);
+        });
+    let picked = rx
+        .await
+        .map_err(|_| AppError::config("The file dialog was dismissed."))?;
+    let Some(file_path) = picked else {
+        return Ok(None); // user cancelled
+    };
+    let path = file_path
+        .into_path()
+        .map_err(|e| AppError::config(format!("Invalid file path: {e}")))?;
+    let meta = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| AppError::config(format!("Could not read graph file: {e}")))?;
+    if meta.len() > 64 * 1024 * 1024 {
+        return Err(AppError::invalid_input("Graph file is too large (>64 MB)."));
+    }
+    tokio::fs::read_to_string(&path)
+        .await
+        .map(Some)
+        .map_err(|e| AppError::config(format!("Could not read graph file: {e}")))
 }
 
 /// Stream a grounded chat completion from the local engine.
@@ -951,4 +995,628 @@ async fn github_index_repo_inner(
         count: status.count,
     });
     Ok(status)
+}
+
+// ---- Slack + Email connectors ----------------------------------------------
+
+/// How long the loopback listener waits for an OAuth redirect.
+const OAUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Progress events for an OAuth-style connect flow (Slack OAuth / Gmail).
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ConnectEvent {
+    /// Open this URL in the browser to authorize; the loopback catches the code.
+    Url { url: String },
+    /// Authorization succeeded and the token was stored.
+    Done,
+    /// The flow failed (denied, timed out, network, …).
+    Error { message: String },
+}
+
+/// Resolve a value from a config field, falling back to an env var. Trimmed;
+/// empty is treated as unset.
+fn resolve_str(from_cfg: &str, env_key: &str) -> Option<String> {
+    let c = from_cfg.trim();
+    if !c.is_empty() {
+        return Some(c.to_string());
+    }
+    std::env::var(env_key)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn resolve_opt(from_cfg: &Option<String>, env_key: &str) -> Option<String> {
+    match from_cfg {
+        Some(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        _ => std::env::var(env_key)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+    }
+}
+
+/// The FIXED Slack redirect port (env override, else the digest default).
+fn slack_redirect_port() -> u16 {
+    std::env::var("LIBBIE_SLACK_REDIRECT_PORT")
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok())
+        .unwrap_or(slack::DEFAULT_REDIRECT_PORT)
+}
+
+/// Convert conversation messages to embedding chunks (kind = "conversation").
+fn conversation_chunk(conv_id: String, text: String) -> Chunk {
+    Chunk {
+        text,
+        path: None,
+        kind: "conversation".to_string(),
+        line_start: 0,
+        conv_id: Some(conv_id),
+    }
+}
+
+// ---- Slack -----------------------------------------------------------------
+
+/// Connect a Slack account. With a pasted `token` we validate it via `auth.test`;
+/// otherwise we run the OAuth v2 loopback flow (emitting the authorize URL, then
+/// catching the code on the FIXED loopback port). The user token is stored in the
+/// Rust core (never logged). Blocked in strict air-gapped mode.
+#[tauri::command]
+pub async fn slack_connect(
+    state: State<'_, AppState>,
+    token: Option<String>,
+    on_event: Channel<ConnectEvent>,
+) -> Result<(), AppError> {
+    let result = slack_connect_inner(&state, token, &on_event).await;
+    if let Err(ref e) = result {
+        let _ = on_event.send(ConnectEvent::Error {
+            message: e.message().to_string(),
+        });
+    }
+    result
+}
+
+async fn slack_connect_inner(
+    state: &AppState,
+    token: Option<String>,
+    on_event: &Channel<ConnectEvent>,
+) -> Result<(), AppError> {
+    if state.config.lock().await.offline_mode {
+        return Err(AppError::airgap_blocked(
+            "Strict air-gapped mode is on — Slack access is disabled. \
+             Turn off air-gap to connect your account.",
+        ));
+    }
+    let client = state.engine.client();
+
+    // Token-paste path: validate and store, no browser round-trip.
+    if let Some(tok) = token
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+    {
+        slack::auth_test(&client, &tok)
+            .await
+            .map_err(AppError::slack)?;
+        let mut cfg = state.config.lock().await;
+        cfg.slack_token = Some(tok);
+        config::save(&cfg)
+            .map_err(|e| AppError::config(format!("Could not save Slack token: {e}")))?;
+        let _ = on_event.send(ConnectEvent::Done);
+        return Ok(());
+    }
+
+    // OAuth v2 loopback path.
+    let (client_id, client_secret) = {
+        let cfg = state.config.lock().await;
+        (
+            resolve_str(&cfg.slack_client_id, "LIBBIE_SLACK_CLIENT_ID"),
+            resolve_opt(&cfg.slack_client_secret, "LIBBIE_SLACK_CLIENT_SECRET"),
+        )
+    };
+    let client_id = client_id.ok_or_else(|| {
+        AppError::slack(
+            "Paste a Slack user token, or set a Slack OAuth client id (and secret) \
+             to connect via the browser.",
+        )
+    })?;
+    let client_secret = client_secret.ok_or_else(|| {
+        AppError::slack("Slack OAuth needs a client secret (LIBBIE_SLACK_CLIENT_SECRET).")
+    })?;
+
+    let port = slack_redirect_port();
+    let csrf = oauth::random_state();
+    let url = slack::build_authorize_url(&client_id, port, &csrf);
+    let _ = on_event.send(ConnectEvent::Url { url });
+
+    // The loopback listener binds the FIXED port and blocks, so run it off the
+    // async runtime.
+    let csrf_moved = csrf.clone();
+    let code = tokio::task::spawn_blocking(move || {
+        slack::catch_oauth_code(port, &csrf_moved, OAUTH_TIMEOUT)
+    })
+    .await
+    .map_err(|e| AppError::slack(format!("Loopback task failed: {e}")))?
+    .map_err(AppError::slack)?;
+
+    let token = slack::exchange_code(&client, &client_id, &client_secret, &code, port)
+        .await
+        .map_err(AppError::slack)?;
+
+    {
+        let mut cfg = state.config.lock().await;
+        cfg.slack_token = Some(token);
+        config::save(&cfg)
+            .map_err(|e| AppError::config(format!("Could not save Slack token: {e}")))?;
+    }
+    let _ = on_event.send(ConnectEvent::Done);
+    Ok(())
+}
+
+/// List every Slack conversation the connected token can read.
+#[tauri::command]
+pub async fn slack_list_channels(
+    state: State<'_, AppState>,
+) -> Result<Vec<SlackChannel>, AppError> {
+    let (offline, token) = {
+        let cfg = state.config.lock().await;
+        (cfg.offline_mode, cfg.slack_token.clone())
+    };
+    if offline {
+        return Err(AppError::airgap_blocked(
+            "Strict air-gapped mode is on — Slack access is disabled.",
+        ));
+    }
+    let token = token
+        .ok_or_else(|| AppError::slack("Not connected to Slack. Connect your account first."))?;
+    let client = state.engine.client();
+    slack::list_channels(&client, &token)
+        .await
+        .map_err(AppError::slack)
+}
+
+/// Fetch history for the selected conversations and index them into the RAG store,
+/// emitting progress. Reuses the shared embed/index helper.
+#[tauri::command]
+pub async fn slack_index_channels(
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+    on_event: Channel<IndexEvent>,
+) -> Result<IndexStatus, AppError> {
+    let result = slack_index_inner(&state, &ids, &on_event).await;
+    if let Err(ref e) = result {
+        let _ = on_event.send(IndexEvent::Error {
+            message: e.message().to_string(),
+        });
+    }
+    result
+}
+
+async fn slack_index_inner(
+    state: &AppState,
+    ids: &[String],
+    on_event: &Channel<IndexEvent>,
+) -> Result<IndexStatus, AppError> {
+    let (offline, token) = {
+        let cfg = state.config.lock().await;
+        (cfg.offline_mode, cfg.slack_token.clone())
+    };
+    if offline {
+        return Err(AppError::airgap_blocked(
+            "Strict air-gapped mode is on — Slack access is disabled.",
+        ));
+    }
+    let token = token
+        .ok_or_else(|| AppError::slack("Not connected to Slack. Connect your account first."))?;
+    if ids.is_empty() {
+        return Err(AppError::invalid_input(
+            "Pick at least one channel to index.",
+        ));
+    }
+    let client = state.engine.client();
+
+    let _ = on_event.send(IndexEvent::Status {
+        message: "Loading channel list…".to_string(),
+    });
+    let channels = slack::list_channels(&client, &token)
+        .await
+        .map_err(AppError::slack)?;
+    let by_id: std::collections::HashMap<&str, &SlackChannel> =
+        channels.iter().map(|c| (c.id.as_str(), c)).collect();
+
+    let _ = on_event.send(IndexEvent::Status {
+        message: "Resolving user names…".to_string(),
+    });
+    let users = slack::user_directory(&client, &token)
+        .await
+        .unwrap_or_default();
+
+    let mut chunks: Vec<Chunk> = Vec::new();
+    for id in ids {
+        let Some(channel) = by_id.get(id.as_str()) else {
+            continue;
+        };
+        let label = if channel.is_im {
+            channel.name.clone()
+        } else {
+            format!("#{}", channel.name)
+        };
+        let _ = on_event.send(IndexEvent::Status {
+            message: format!("Fetching {label}…"),
+        });
+        let msgs = slack::fetch_history(&client, &token, id)
+            .await
+            .map_err(AppError::slack)?;
+        for m in &msgs {
+            let (conv_id, text) = slack::message_chunk(channel, &users, m);
+            chunks.push(conversation_chunk(conv_id, text));
+        }
+    }
+
+    if chunks.is_empty() {
+        return Err(AppError::invalid_input(
+            "No messages were found in the selected channels.",
+        ));
+    }
+
+    let ev = on_event.clone();
+    let status = embed_and_index(state, &chunks, move |done, total| {
+        let fraction = if total > 0 {
+            done as f64 / total as f64
+        } else {
+            0.0
+        };
+        let _ = ev.send(IndexEvent::Progress {
+            done,
+            total,
+            fraction,
+        });
+    })
+    .await?;
+
+    let _ = on_event.send(IndexEvent::Done {
+        count: status.count,
+    });
+    Ok(status)
+}
+
+// ---- Email: Gmail ----------------------------------------------------------
+
+/// Connect Gmail via the OAuth loopback (installed-app + PKCE). Emits the consent
+/// URL, catches the code on an ephemeral loopback port, exchanges it, and stores
+/// the access token in the Rust core (never logged). Blocked in air-gapped mode.
+#[tauri::command]
+pub async fn email_gmail_connect(
+    state: State<'_, AppState>,
+    on_event: Channel<ConnectEvent>,
+) -> Result<(), AppError> {
+    let result = email_gmail_connect_inner(&state, &on_event).await;
+    if let Err(ref e) = result {
+        let _ = on_event.send(ConnectEvent::Error {
+            message: e.message().to_string(),
+        });
+    }
+    result
+}
+
+async fn email_gmail_connect_inner(
+    state: &AppState,
+    on_event: &Channel<ConnectEvent>,
+) -> Result<(), AppError> {
+    let (offline, client_id, client_secret) = {
+        let cfg = state.config.lock().await;
+        (
+            cfg.offline_mode,
+            resolve_str(&cfg.gmail_client_id, "LIBBIE_GMAIL_CLIENT_ID"),
+            resolve_opt(&cfg.gmail_client_secret, "LIBBIE_GMAIL_CLIENT_SECRET"),
+        )
+    };
+    if offline {
+        return Err(AppError::airgap_blocked(
+            "Strict air-gapped mode is on — Gmail access is disabled. \
+             Turn off air-gap to connect your account.",
+        ));
+    }
+    let client_id = client_id.ok_or_else(|| {
+        AppError::email(
+            "No Gmail OAuth client id configured. Set it in Settings (or the \
+             LIBBIE_GMAIL_CLIENT_ID environment variable).",
+        )
+    })?;
+
+    let (server, port) = oauth::bind_ephemeral().map_err(AppError::email)?;
+    let pkce = oauth::pkce();
+    let csrf = oauth::random_state();
+    let url = email::build_gmail_authorize_url(&client_id, port, &csrf, &pkce.challenge);
+    let _ = on_event.send(ConnectEvent::Url { url });
+
+    let csrf_moved = csrf.clone();
+    let code = tokio::task::spawn_blocking(move || {
+        oauth::recv_oauth_code(server, &csrf_moved, OAUTH_TIMEOUT)
+    })
+    .await
+    .map_err(|e| AppError::email(format!("Loopback task failed: {e}")))?
+    .map_err(AppError::email)?;
+
+    let client = state.engine.client();
+    let token = email::gmail_exchange_code(
+        &client,
+        &client_id,
+        client_secret.as_deref(),
+        &code,
+        port,
+        &pkce.verifier,
+    )
+    .await
+    .map_err(AppError::email)?;
+
+    {
+        let mut cfg = state.config.lock().await;
+        cfg.gmail_token = Some(token);
+        config::save(&cfg)
+            .map_err(|e| AppError::config(format!("Could not save Gmail token: {e}")))?;
+    }
+    let _ = on_event.send(ConnectEvent::Done);
+    Ok(())
+}
+
+/// List Gmail labels for the connected account.
+#[tauri::command]
+pub async fn email_list_labels(state: State<'_, AppState>) -> Result<Vec<EmailFolder>, AppError> {
+    let (offline, token) = {
+        let cfg = state.config.lock().await;
+        (cfg.offline_mode, cfg.gmail_token.clone())
+    };
+    if offline {
+        return Err(AppError::airgap_blocked(
+            "Strict air-gapped mode is on — Gmail access is disabled.",
+        ));
+    }
+    let token = token
+        .ok_or_else(|| AppError::email("Not connected to Gmail. Connect your account first."))?;
+    let client = state.engine.client();
+    email::gmail_list_labels(&client, &token)
+        .await
+        .map_err(AppError::email)
+}
+
+// ---- Email: IMAP -----------------------------------------------------------
+
+/// Store IMAP credentials and verify them by connecting + listing mailboxes. The
+/// app password is kept in the Rust core (never logged). Blocked in air-gapped
+/// mode (IMAP is egress).
+#[tauri::command]
+pub async fn email_imap_connect(
+    state: State<'_, AppState>,
+    host: String,
+    port: u16,
+    user: String,
+    password: Option<String>,
+) -> Result<Vec<EmailFolder>, AppError> {
+    if state.config.lock().await.offline_mode {
+        return Err(AppError::airgap_blocked(
+            "Strict air-gapped mode is on — IMAP access is disabled. \
+             Turn off air-gap to connect a mailbox.",
+        ));
+    }
+    let host = host.trim().to_string();
+    let user = user.trim().to_string();
+    if host.is_empty() || user.is_empty() {
+        return Err(AppError::invalid_input("IMAP host and user are required."));
+    }
+    // A blank/sentinel password means "use the stored one".
+    let password = match password.map(|p| p.trim().to_string()) {
+        Some(p) if p == config::SECRET_SENTINEL || p.is_empty() => {
+            state.config.lock().await.imap_password.clone()
+        }
+        Some(p) => Some(p),
+        None => state.config.lock().await.imap_password.clone(),
+    }
+    .ok_or_else(|| AppError::invalid_input("An IMAP app password is required."))?;
+
+    let cfg = ImapConfig {
+        host: host.clone(),
+        port,
+        user: user.clone(),
+        password: password.clone(),
+    };
+    // Verify before persisting.
+    let mailboxes = email::imap_list_mailboxes(&cfg)
+        .await
+        .map_err(AppError::email)?;
+
+    {
+        let mut c = state.config.lock().await;
+        c.imap_host = host;
+        c.imap_port = port;
+        c.imap_user = user;
+        c.imap_password = Some(password);
+        config::save(&c)
+            .map_err(|e| AppError::config(format!("Could not save IMAP settings: {e}")))?;
+    }
+    Ok(mailboxes)
+}
+
+/// List mailboxes using the stored IMAP credentials.
+#[tauri::command]
+pub async fn email_list_mailboxes(
+    state: State<'_, AppState>,
+) -> Result<Vec<EmailFolder>, AppError> {
+    let cfg = imap_config_from_state(state.inner()).await?;
+    email::imap_list_mailboxes(&cfg)
+        .await
+        .map_err(AppError::email)
+}
+
+/// Build an `ImapConfig` from stored config, enforcing the air-gap and presence
+/// of credentials.
+async fn imap_config_from_state(state: &AppState) -> Result<ImapConfig, AppError> {
+    let cfg = state.config.lock().await;
+    if cfg.offline_mode {
+        return Err(AppError::airgap_blocked(
+            "Strict air-gapped mode is on — IMAP access is disabled.",
+        ));
+    }
+    let password = cfg
+        .imap_password
+        .clone()
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| AppError::email("No IMAP mailbox connected. Connect one first."))?;
+    if cfg.imap_host.trim().is_empty() || cfg.imap_user.trim().is_empty() {
+        return Err(AppError::email(
+            "No IMAP mailbox connected. Connect one first.",
+        ));
+    }
+    Ok(ImapConfig {
+        host: cfg.imap_host.clone(),
+        port: cfg.imap_port,
+        user: cfg.imap_user.clone(),
+        password,
+    })
+}
+
+// ---- Email: index ----------------------------------------------------------
+
+/// Index the selected email folders into the RAG store. `source` is `"gmail"` or
+/// `"imap"`; `folders` are Gmail label ids or IMAP mailbox names. Reuses the
+/// shared embed/index helper.
+#[tauri::command]
+pub async fn email_index(
+    state: State<'_, AppState>,
+    source: String,
+    folders: Vec<String>,
+    on_event: Channel<IndexEvent>,
+) -> Result<IndexStatus, AppError> {
+    let result = email_index_inner(&state, &source, &folders, &on_event).await;
+    if let Err(ref e) = result {
+        let _ = on_event.send(IndexEvent::Error {
+            message: e.message().to_string(),
+        });
+    }
+    result
+}
+
+async fn email_index_inner(
+    state: &AppState,
+    source: &str,
+    folders: &[String],
+    on_event: &Channel<IndexEvent>,
+) -> Result<IndexStatus, AppError> {
+    if state.config.lock().await.offline_mode {
+        return Err(AppError::airgap_blocked(
+            "Strict air-gapped mode is on — email access is disabled.",
+        ));
+    }
+    let chunks = match source {
+        "gmail" => collect_gmail_chunks(state, folders, on_event).await?,
+        "imap" => collect_imap_chunks(state, folders, on_event).await?,
+        other => {
+            return Err(AppError::invalid_input(format!(
+                "Unknown email source {other:?} (expected 'gmail' or 'imap')."
+            )))
+        }
+    };
+    if chunks.is_empty() {
+        return Err(AppError::invalid_input(
+            "No messages were found in the selected folders.",
+        ));
+    }
+
+    let ev = on_event.clone();
+    let status = embed_and_index(state, &chunks, move |done, total| {
+        let fraction = if total > 0 {
+            done as f64 / total as f64
+        } else {
+            0.0
+        };
+        let _ = ev.send(IndexEvent::Progress {
+            done,
+            total,
+            fraction,
+        });
+    })
+    .await?;
+
+    let _ = on_event.send(IndexEvent::Done {
+        count: status.count,
+    });
+    Ok(status)
+}
+
+async fn collect_gmail_chunks(
+    state: &AppState,
+    labels: &[String],
+    on_event: &Channel<IndexEvent>,
+) -> Result<Vec<Chunk>, AppError> {
+    let token = {
+        let cfg = state.config.lock().await;
+        cfg.gmail_token.clone()
+    }
+    .ok_or_else(|| AppError::email("Not connected to Gmail. Connect your account first."))?;
+    let client = state.engine.client();
+
+    // No label selected -> index across all mail.
+    let selection: Vec<Option<String>> = if labels.is_empty() {
+        vec![None]
+    } else {
+        labels.iter().map(|l| Some(l.clone())).collect()
+    };
+
+    let mut chunks: Vec<Chunk> = Vec::new();
+    for label in selection {
+        let _ = on_event.send(IndexEvent::Status {
+            message: format!("Listing Gmail messages{}…", label_suffix(&label)),
+        });
+        let ids = email::gmail_list_message_ids(&client, &token, label.as_deref())
+            .await
+            .map_err(AppError::email)?;
+        let total = ids.len();
+        for (i, id) in ids.iter().enumerate() {
+            let rec = email::gmail_get_message(&client, &token, id)
+                .await
+                .map_err(AppError::email)?;
+            let (conv_id, text) = email::message_chunk(&rec);
+            chunks.push(conversation_chunk(conv_id, text));
+            if i % 25 == 0 {
+                let _ = on_event.send(IndexEvent::Status {
+                    message: format!("Fetched {}/{total} Gmail messages…", i + 1),
+                });
+            }
+        }
+    }
+    Ok(chunks)
+}
+
+fn label_suffix(label: &Option<String>) -> String {
+    match label {
+        Some(l) => format!(" in {l}"),
+        None => String::new(),
+    }
+}
+
+async fn collect_imap_chunks(
+    state: &AppState,
+    mailboxes: &[String],
+    on_event: &Channel<IndexEvent>,
+) -> Result<Vec<Chunk>, AppError> {
+    let cfg = imap_config_from_state(state).await?;
+    if mailboxes.is_empty() {
+        return Err(AppError::invalid_input(
+            "Pick at least one mailbox to index.",
+        ));
+    }
+    let mut chunks: Vec<Chunk> = Vec::new();
+    for mbox in mailboxes {
+        let _ = on_event.send(IndexEvent::Status {
+            message: format!("Fetching mailbox {mbox}…"),
+        });
+        let records = email::imap_fetch(&cfg, mbox)
+            .await
+            .map_err(AppError::email)?;
+        for rec in &records {
+            let (conv_id, text) = email::message_chunk(rec);
+            chunks.push(conversation_chunk(conv_id, text));
+        }
+    }
+    Ok(chunks)
 }
