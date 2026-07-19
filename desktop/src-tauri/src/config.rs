@@ -22,10 +22,10 @@ pub enum PreferredEngine {
 }
 
 /// Where chat completions come from.
-///   * `Local`            — a llama.cpp / vLLM server this app manages on loopback.
-///   * `OpenaiCompatible` — any OpenAI-compatible endpoint (OpenAI, Groq, Together,
-///                          Mistral, OpenRouter, a self-hosted vLLM, …) via base URL + key.
-///   * `Anthropic`        — the Anthropic Messages API natively.
+///
+/// - `Local`: a llama.cpp / vLLM server this app manages on loopback.
+/// - `OpenaiCompatible`: any OpenAI-compatible endpoint (OpenAI, Groq, Together, Mistral, OpenRouter, a self-hosted vLLM) via base URL + key.
+/// - `Anthropic`: the Anthropic Messages API natively.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ChatProvider {
@@ -39,11 +39,11 @@ pub enum ChatProvider {
 /// knowledge of which provider the user picked.
 #[derive(Debug, Clone)]
 pub struct ProviderTarget {
-    pub anthropic: bool,          // true => Anthropic wire format; false => OpenAI-compatible
-    pub base_url: String,         // no trailing slash
+    pub anthropic: bool,  // true => Anthropic wire format; false => OpenAI-compatible
+    pub base_url: String, // no trailing slash
     pub api_key: Option<String>,
     pub model: String,
-    pub is_local: bool,           // true => loopback-enforced (air-gap)
+    pub is_local: bool, // true => loopback-enforced (air-gap)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -242,8 +242,12 @@ impl AppConfig {
                 .to_string());
         }
         match self.chat_provider {
-            ChatProvider::OpenaiCompatible => require_http_url("openai_base_url", &self.openai_base_url)?,
-            ChatProvider::Anthropic => require_http_url("anthropic_base_url", &self.anthropic_base_url)?,
+            ChatProvider::OpenaiCompatible => {
+                require_http_url("openai_base_url", &self.openai_base_url)?
+            }
+            ChatProvider::Anthropic => {
+                require_http_url("anthropic_base_url", &self.anthropic_base_url)?
+            }
             ChatProvider::Local => {}
         }
         Ok(())
@@ -265,7 +269,8 @@ impl AppConfig {
     /// keeps the stored value; an empty string clears it; anything else updates.
     pub fn merge_secrets_from(&mut self, current: &AppConfig) {
         self.openai_api_key = merge_secret(self.openai_api_key.take(), &current.openai_api_key);
-        self.anthropic_api_key = merge_secret(self.anthropic_api_key.take(), &current.anthropic_api_key);
+        self.anthropic_api_key =
+            merge_secret(self.anthropic_api_key.take(), &current.anthropic_api_key);
         self.github_token = merge_secret(self.github_token.take(), &current.github_token);
     }
 }
@@ -284,8 +289,8 @@ fn mask_secret(v: &Option<String>) -> Option<String> {
 fn merge_secret(incoming: Option<String>, current: &Option<String>) -> Option<String> {
     match incoming {
         Some(s) if s == SECRET_SENTINEL => current.clone(), // unchanged -> keep stored
-        Some(s) if s.is_empty() => None,                     // explicitly cleared
-        other => other,                                      // updated
+        Some(s) if s.is_empty() => None,                    // explicitly cleared
+        other => other,                                     // updated
     }
 }
 
@@ -362,7 +367,14 @@ mod tests {
 
     #[test]
     fn loopback_hosts_accepted() {
-        for h in ["127.0.0.1", "localhost", "LOCALHOST", "::1", "[::1]", "127.5.5.5"] {
+        for h in [
+            "127.0.0.1",
+            "localhost",
+            "LOCALHOST",
+            "::1",
+            "[::1]",
+            "127.5.5.5",
+        ] {
             assert!(is_loopback_host(h), "{h} should be loopback");
         }
     }
@@ -389,10 +401,12 @@ mod tests {
 
     #[test]
     fn air_gap_forbids_cloud_providers() {
-        let mut c = AppConfig::default();
-        c.offline_mode = true;
-        c.chat_provider = ChatProvider::OpenaiCompatible;
-        c.openai_api_key = Some("sk-x".into());
+        let mut c = AppConfig {
+            offline_mode: true,
+            chat_provider: ChatProvider::OpenaiCompatible,
+            openai_api_key: Some("sk-x".into()),
+            ..Default::default()
+        };
         assert!(c.validate().is_err(), "air-gap + cloud must be rejected");
         c.offline_mode = false;
         assert!(c.validate().is_ok(), "cloud allowed once air-gap is off");
@@ -400,10 +414,12 @@ mod tests {
 
     #[test]
     fn cloud_requires_http_url() {
-        let mut c = AppConfig::default();
-        c.offline_mode = false;
-        c.chat_provider = ChatProvider::OpenaiCompatible;
-        c.openai_base_url = "ftp://nope".into();
+        let mut c = AppConfig {
+            offline_mode: false,
+            chat_provider: ChatProvider::OpenaiCompatible,
+            openai_base_url: "ftp://nope".into(),
+            ..Default::default()
+        };
         assert!(c.validate().is_err());
         c.openai_base_url = "https://api.groq.com/openai/v1".into();
         assert!(c.validate().is_ok());
@@ -428,9 +444,11 @@ mod tests {
 
     #[test]
     fn redaction_hides_secrets_and_merge_preserves_them() {
-        let mut c = AppConfig::default();
-        c.openai_api_key = Some("sk-real".into());
-        c.github_token = Some("gho-real".into());
+        let c = AppConfig {
+            openai_api_key: Some("sk-real".into()),
+            github_token: Some("gho-real".into()),
+            ..Default::default()
+        };
 
         // redacted(): set secrets masked to the sentinel, unset ones dropped.
         let red = c.redacted();

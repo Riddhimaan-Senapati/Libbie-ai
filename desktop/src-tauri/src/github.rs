@@ -230,13 +230,11 @@ pub async fn list_repos(client: &reqwest::Client, token: &str) -> Result<Vec<Rep
         if !resp.status().is_success() {
             let code = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(format!("GitHub returned {code} listing repositories: {body}"));
+            return Err(format!(
+                "GitHub returned {code} listing repositories: {body}"
+            ));
         }
-        let next = next_link(
-            resp.headers()
-                .get("link")
-                .and_then(|v| v.to_str().ok()),
-        );
+        let next = next_link(resp.headers().get("link").and_then(|v| v.to_str().ok()));
         let page: Vec<Repo> = resp
             .json()
             .await
@@ -283,7 +281,11 @@ fn write_askpass() -> Result<PathBuf, String> {
 
     #[cfg(windows)]
     {
-        let path = dir.join(format!("libbie_askpass_{}_{}.bat", std::process::id(), nanos));
+        let path = dir.join(format!(
+            "libbie_askpass_{}_{}.bat",
+            std::process::id(),
+            nanos
+        ));
         // `echo(` (not `echo `) prints an empty line instead of "ECHO is on."
         // when the token env var is empty/unset.
         let script = format!("@echo off\r\necho(%{ASKPASS_TOKEN_ENV}%\r\n");
@@ -295,7 +297,11 @@ fn write_askpass() -> Result<PathBuf, String> {
     #[cfg(not(windows))]
     {
         use std::os::unix::fs::PermissionsExt;
-        let path = dir.join(format!("libbie_askpass_{}_{}.sh", std::process::id(), nanos));
+        let path = dir.join(format!(
+            "libbie_askpass_{}_{}.sh",
+            std::process::id(),
+            nanos
+        ));
         let script = format!("#!/bin/sh\nprintf '%s\\n' \"${ASKPASS_TOKEN_ENV}\"\n");
         std::fs::write(&path, script)
             .map_err(|e| format!("Could not write askpass helper: {e}"))?;
@@ -336,7 +342,10 @@ fn build_clone_command(
         dest.to_string_lossy().into_owned(),
     ];
     let env = vec![
-        ("GIT_ASKPASS".to_string(), askpass.to_string_lossy().into_owned()),
+        (
+            "GIT_ASKPASS".to_string(),
+            askpass.to_string_lossy().into_owned(),
+        ),
         ("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()),
         (ASKPASS_TOKEN_ENV.to_string(), token.to_string()),
     ];
@@ -415,16 +424,16 @@ mod tests {
     #[test]
     fn full_name_rejects_traversal_and_malformed() {
         for s in [
-            "owner",                 // no slash
-            "owner/",                // empty repo
-            "/repo",                 // empty owner
-            "a/b/c",                 // too many segments
-            "../etc/passwd",         // traversal characters
-            "owner/re po",           // space
-            "owner/repo;rm -rf",     // shell metachars
-            "owner/repo?x=1",        // query
-            "own er/repo",           // space in owner
-            "",                      // empty
+            "owner",             // no slash
+            "owner/",            // empty repo
+            "/repo",             // empty owner
+            "a/b/c",             // too many segments
+            "../etc/passwd",     // traversal characters
+            "owner/re po",       // space
+            "owner/repo;rm -rf", // shell metachars
+            "owner/repo?x=1",    // query
+            "own er/repo",       // space in owner
+            "",                  // empty
         ] {
             assert!(!valid_full_name(s), "{s} must be rejected");
         }
@@ -435,13 +444,15 @@ mod tests {
         let token = "gho_supersecrettoken123";
         let dest = Path::new("/tmp/libbie/clone-x");
         let askpass = Path::new("/tmp/libbie/askpass.sh");
-        let (args, env) = build_clone_command("octocat/Hello-World", token, dest, &askpass);
+        let (args, env) = build_clone_command("octocat/Hello-World", token, dest, askpass);
 
         // Shallow clone with an arg vector (no shell string).
         assert!(args.contains(&"clone".to_string()));
         assert!(args.windows(2).any(|w| w[0] == "--depth" && w[1] == "1"));
         // Ambient credential helpers disabled (token can't be persisted).
-        assert!(args.windows(2).any(|w| w[0] == "-c" && w[1] == "credential.helper="));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "-c" && w[1] == "credential.helper="));
         assert!(args.iter().any(|a| a.starts_with("--filter=blob:limit=")));
 
         // The URL is token-less.

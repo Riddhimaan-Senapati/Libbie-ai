@@ -76,7 +76,7 @@ pub enum StreamEvent {
 /// Rough token count from a character length: `ceil(chars / 4)`. Used only as a
 /// last-resort fallback when the provider reports no usage (no tokenizer dep).
 fn est_tokens(chars: usize) -> u32 {
-    ((chars + 3) / 4) as u32
+    chars.div_ceil(4) as u32
 }
 
 /// Assert the destination is genuinely loopback before any request.
@@ -118,7 +118,9 @@ async fn ensure_success(
     } else {
         let code = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        Err(AppError::engine_error(format!("{what} returned {code}: {text}")))
+        Err(AppError::engine_error(format!(
+            "{what} returned {code}: {text}"
+        )))
     }
 }
 
@@ -201,7 +203,9 @@ pub async fn stream_chat(
     let resp = chat_request(client, target, &messages, &opts)
         .send()
         .await
-        .map_err(|e| AppError::engine_unreachable(format!("Could not reach the model provider: {e}")))?;
+        .map_err(|e| {
+            AppError::engine_unreachable(format!("Could not reach the model provider: {e}"))
+        })?;
     let resp = ensure_success(resp, "Provider").await?;
 
     let anthropic = target.anthropic;
@@ -258,8 +262,13 @@ pub async fn stream_chat(
             }
             if !anthropic && data == "[DONE]" {
                 emit_usage(
-                    channel, usage_in, usage_out, timings_in, timings_out,
-                    tokens_per_sec, streamed_chars,
+                    channel,
+                    usage_in,
+                    usage_out,
+                    timings_in,
+                    timings_out,
+                    tokens_per_sec,
+                    streamed_chars,
                 );
                 let _ = channel.send(StreamEvent::Done {
                     finish_reason: finish_reason.clone(),
@@ -281,18 +290,22 @@ pub async fn stream_chat(
                         }
                     }
                     Some("content_block_delta") => {
-                        if json.pointer("/delta/type").and_then(|t| t.as_str()) == Some("text_delta")
+                        if json.pointer("/delta/type").and_then(|t| t.as_str())
+                            == Some("text_delta")
                         {
                             if let Some(t) = json.pointer("/delta/text").and_then(|t| t.as_str()) {
                                 if !t.is_empty() {
                                     streamed_chars += t.chars().count();
-                                    let _ = channel.send(StreamEvent::Token { text: t.to_string() });
+                                    let _ = channel.send(StreamEvent::Token {
+                                        text: t.to_string(),
+                                    });
                                 }
                             }
                         }
                     }
                     Some("message_delta") => {
-                        if let Some(r) = json.pointer("/delta/stop_reason").and_then(|r| r.as_str()) {
+                        if let Some(r) = json.pointer("/delta/stop_reason").and_then(|r| r.as_str())
+                        {
                             finish_reason = r.to_string();
                         }
                         // Cumulative — the last value seen is the total.
@@ -305,8 +318,13 @@ pub async fn stream_chat(
                     }
                     Some("message_stop") => {
                         emit_usage(
-                            channel, usage_in, usage_out, timings_in, timings_out,
-                            tokens_per_sec, streamed_chars,
+                            channel,
+                            usage_in,
+                            usage_out,
+                            timings_in,
+                            timings_out,
+                            tokens_per_sec,
+                            streamed_chars,
                         );
                         let _ = channel.send(StreamEvent::Done {
                             finish_reason: finish_reason.clone(),
@@ -316,15 +334,22 @@ pub async fn stream_chat(
                     Some("error") => {
                         // Account partial usage before surfacing the error.
                         emit_usage(
-                            channel, usage_in, usage_out, timings_in, timings_out,
-                            tokens_per_sec, streamed_chars,
+                            channel,
+                            usage_in,
+                            usage_out,
+                            timings_in,
+                            timings_out,
+                            tokens_per_sec,
+                            streamed_chars,
                         );
                         let msg = json
                             .pointer("/error/message")
                             .and_then(|m| m.as_str())
                             .unwrap_or("provider stream error")
                             .to_string();
-                        let _ = channel.send(StreamEvent::Error { message: msg.clone() });
+                        let _ = channel.send(StreamEvent::Error {
+                            message: msg.clone(),
+                        });
                         return Err(AppError::engine_error(msg));
                     }
                     _ => {} // ping / content_block_start|stop / etc.
@@ -341,8 +366,7 @@ pub async fn stream_chat(
                     }
                 }
                 if let Some(timings) = json.get("timings") {
-                    if let Some(tps) =
-                        timings.get("predicted_per_second").and_then(|v| v.as_f64())
+                    if let Some(tps) = timings.get("predicted_per_second").and_then(|v| v.as_f64())
                     {
                         tokens_per_sec = Some(tps as f32);
                     }
@@ -360,7 +384,9 @@ pub async fn stream_chat(
                     if let Some(text) = choice.pointer("/delta/content").and_then(|c| c.as_str()) {
                         if !text.is_empty() {
                             streamed_chars += text.chars().count();
-                            let _ = channel.send(StreamEvent::Token { text: text.to_string() });
+                            let _ = channel.send(StreamEvent::Token {
+                                text: text.to_string(),
+                            });
                         }
                     }
                 }
@@ -369,7 +395,12 @@ pub async fn stream_chat(
     }
 
     emit_usage(
-        channel, usage_in, usage_out, timings_in, timings_out, tokens_per_sec,
+        channel,
+        usage_in,
+        usage_out,
+        timings_in,
+        timings_out,
+        tokens_per_sec,
         streamed_chars,
     );
     let _ = channel.send(StreamEvent::Done { finish_reason });
@@ -404,11 +435,18 @@ pub async fn embed(
     let mut rows: Vec<(i64, Vec<f32>)> = Vec::new();
     if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
         for (i, item) in data.iter().enumerate() {
-            let idx = item.get("index").and_then(|v| v.as_i64()).unwrap_or(i as i64);
+            let idx = item
+                .get("index")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(i as i64);
             let vec = item
                 .get("embedding")
                 .and_then(|e| e.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_f64().map(|f| f as f32))
+                        .collect()
+                })
                 .unwrap_or_default();
             rows.push((idx, vec));
         }

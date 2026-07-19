@@ -361,9 +361,17 @@ pub struct HfFile {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum DownloadEvent {
-    Progress { downloaded: u64, total: u64, fraction: f64 },
-    Done { path: String },
-    Error { message: String },
+    Progress {
+        downloaded: u64,
+        total: u64,
+        fraction: f64,
+    },
+    Done {
+        path: String,
+    },
+    Error {
+        message: String,
+    },
 }
 
 /// List the `.gguf` files in a HuggingFace repo via the Hub tree API.
@@ -376,9 +384,7 @@ pub async fn list_hf_gguf(
     token: Option<String>,
 ) -> Result<Vec<HfFile>, AppError> {
     let rev = revision.unwrap_or_else(|| "main".to_string());
-    let url = format!(
-        "https://huggingface.co/api/models/{repo}/tree/{rev}?recursive=true"
-    );
+    let url = format!("https://huggingface.co/api/models/{repo}/tree/{rev}?recursive=true");
     let mut req = state.engine.client().get(&url);
     if let Some(t) = token {
         req = req.bearer_auth(t);
@@ -406,7 +412,10 @@ pub async fn list_hf_gguf(
                 return None;
             }
             let size = it.get("size").and_then(|s| s.as_u64()).unwrap_or(0);
-            Some(HfFile { path, size_mb: size / 1024 / 1024 })
+            Some(HfFile {
+                path,
+                size_mb: size / 1024 / 1024,
+            })
         })
         .collect();
     out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -441,7 +450,9 @@ pub async fn download_model(
         .and_then(|n| n.to_str())
         .ok_or_else(|| AppError::invalid_input("Invalid filename."))?;
     if !base.to_ascii_lowercase().ends_with(".gguf") {
-        return Err(AppError::invalid_input("Only .gguf files can be downloaded."));
+        return Err(AppError::invalid_input(
+            "Only .gguf files can be downloaded.",
+        ));
     }
     let dir = PathBuf::from(&models_dir);
     tokio::fs::create_dir_all(&dir)
@@ -501,8 +512,16 @@ async fn stream_to_file(
             .await
             .map_err(|e| AppError::config(format!("Write error: {e}")))?;
         downloaded += bytes.len() as u64;
-        let fraction = if total > 0 { downloaded as f64 / total as f64 } else { 0.0 };
-        let _ = on_progress.send(DownloadEvent::Progress { downloaded, total, fraction });
+        let fraction = if total > 0 {
+            downloaded as f64 / total as f64
+        } else {
+            0.0
+        };
+        let _ = on_progress.send(DownloadEvent::Progress {
+            downloaded,
+            total,
+            fraction,
+        });
     }
     file.flush()
         .await
@@ -535,7 +554,11 @@ pub enum IndexEvent {
     /// A human-readable phase update (cloning, scanning, …).
     Status { message: String },
     /// Embedding progress over the collected chunks.
-    Progress { done: usize, total: usize, fraction: f64 },
+    Progress {
+        done: usize,
+        total: usize,
+        fraction: f64,
+    },
     /// Indexing finished; `count` chunks are now searchable.
     Done { count: i64 },
     /// The operation failed.
@@ -544,21 +567,110 @@ pub enum IndexEvent {
 
 /// File extensions worth indexing (code + text + docs). Anything else is skipped.
 const INDEXABLE_EXTS: &[&str] = &[
-    "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "java", "kt", "kts",
-    "c", "cc", "cpp", "cxx", "h", "hpp", "hh", "cs", "rb", "php", "swift", "scala",
-    "sh", "bash", "zsh", "ps1", "sql", "r", "jl", "lua", "pl", "pm", "ex", "exs",
-    "erl", "clj", "hs", "ml", "dart", "vue", "svelte", "css", "scss", "sass", "less",
-    "html", "htm", "xml", "json", "yaml", "yml", "toml", "ini", "cfg", "conf",
-    "config", "properties", "env", "md", "mdx", "markdown", "rst", "txt", "text",
-    "nf", "nextflow", "wdl", "cwl", "snakefile", "dockerfile", "makefile", "cmake",
-    "gradle", "tf", "hcl", "proto", "graphql", "gql",
+    "rs",
+    "ts",
+    "tsx",
+    "js",
+    "jsx",
+    "mjs",
+    "cjs",
+    "py",
+    "go",
+    "java",
+    "kt",
+    "kts",
+    "c",
+    "cc",
+    "cpp",
+    "cxx",
+    "h",
+    "hpp",
+    "hh",
+    "cs",
+    "rb",
+    "php",
+    "swift",
+    "scala",
+    "sh",
+    "bash",
+    "zsh",
+    "ps1",
+    "sql",
+    "r",
+    "jl",
+    "lua",
+    "pl",
+    "pm",
+    "ex",
+    "exs",
+    "erl",
+    "clj",
+    "hs",
+    "ml",
+    "dart",
+    "vue",
+    "svelte",
+    "css",
+    "scss",
+    "sass",
+    "less",
+    "html",
+    "htm",
+    "xml",
+    "json",
+    "yaml",
+    "yml",
+    "toml",
+    "ini",
+    "cfg",
+    "conf",
+    "config",
+    "properties",
+    "env",
+    "md",
+    "mdx",
+    "markdown",
+    "rst",
+    "txt",
+    "text",
+    "nf",
+    "nextflow",
+    "wdl",
+    "cwl",
+    "snakefile",
+    "dockerfile",
+    "makefile",
+    "cmake",
+    "gradle",
+    "tf",
+    "hcl",
+    "proto",
+    "graphql",
+    "gql",
 ];
 
 /// Directories to skip entirely during the walk (VCS, deps, build output).
 const SKIP_DIRS: &[&str] = &[
-    ".git", "node_modules", "target", "dist", "build", "out", ".venv", "venv",
-    "__pycache__", ".mypy_cache", ".pytest_cache", "vendor", ".next", ".nuxt",
-    ".svelte-kit", ".gradle", ".idea", ".vscode", "coverage", ".cache",
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "out",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    "vendor",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".gradle",
+    ".idea",
+    ".vscode",
+    "coverage",
+    ".cache",
 ];
 
 const MAX_FILE_BYTES: u64 = 512 * 1024; // skip files larger than ~512 KB
@@ -822,11 +934,21 @@ async fn github_index_repo_inner(
 
     let ev = on_event.clone();
     let status = embed_and_index(state, &chunks, move |done, total| {
-        let fraction = if total > 0 { done as f64 / total as f64 } else { 0.0 };
-        let _ = ev.send(IndexEvent::Progress { done, total, fraction });
+        let fraction = if total > 0 {
+            done as f64 / total as f64
+        } else {
+            0.0
+        };
+        let _ = ev.send(IndexEvent::Progress {
+            done,
+            total,
+            fraction,
+        });
     })
     .await?;
 
-    let _ = on_event.send(IndexEvent::Done { count: status.count });
+    let _ = on_event.send(IndexEvent::Done {
+        count: status.count,
+    });
     Ok(status)
 }
