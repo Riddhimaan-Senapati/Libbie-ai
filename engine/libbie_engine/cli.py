@@ -275,6 +275,218 @@ def github_ingest(
     )
 
 
+# --------------------------------------------------------------------------- #
+# Slack connector sub-app: `libbie slack {token,login,channels,ingest}`
+# --------------------------------------------------------------------------- #
+slack_app = typer.Typer(
+    help="Connect a Slack account (token paste or OAuth) and ingest channel history.",
+    no_args_is_help=True,
+    add_completion=False,
+)
+app.add_typer(slack_app, name="slack")
+
+
+@slack_app.command("token")
+def slack_token(
+    token: str = typer.Option(
+        ..., "--token", prompt=True, hide_input=True,
+        help="A Slack user token (xoxp-...) or bot token (xoxb-...).",
+    ),
+    config: Optional[Path] = ConfigOpt,
+) -> None:
+    """Validate a pasted token via auth.test and store it (never logged)."""
+    from . import slack as sl
+
+    try:
+        ident = sl.validate_token(token)
+    except Exception as exc:
+        typer.echo(f"Token validation failed: {exc}", err=True)
+        raise typer.Exit(1)
+
+    cfg = _cfg(config)
+    sl.save_token(token, _store_root(cfg))
+    typer.echo(
+        f"Authenticated as {ident.get('user', '?')} on team "
+        f"{ident.get('team', '?')}. Token stored securely (never logged)."
+    )
+
+
+@slack_app.command("login")
+def slack_login(config: Optional[Path] = ConfigOpt) -> None:
+    """Authenticate via Slack OAuth v2 loopback (fixed redirect port) and store
+    the user token."""
+    from . import slack as sl
+
+    client_id = sl.get_client_id()
+    client_secret = sl.get_client_secret()
+    if not client_id or not client_secret:
+        typer.echo(
+            "No OAuth app configured. Set $LIBBIE_SLACK_CLIENT_ID and "
+            "$LIBBIE_SLACK_CLIENT_SECRET, and register the redirect URL "
+            f"{sl.redirect_uri()} on the Slack app (the loopback port is FIXED -- "
+            "Slack rejects unregistered/random ports). Or use `libbie slack token`.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    try:
+        token = sl.run_oauth_flow(client_id, client_secret)
+    except Exception as exc:
+        typer.echo(f"OAuth failed: {exc}", err=True)
+        raise typer.Exit(1)
+
+    cfg = _cfg(config)
+    sl.save_token(token, _store_root(cfg))
+    typer.echo("Authenticated. User token stored securely (never logged).")
+
+
+@slack_app.command("channels")
+def slack_channels(config: Optional[Path] = ConfigOpt) -> None:
+    """List conversations the stored token can see (public/private/im/mpim)."""
+    from . import slack as sl
+
+    cfg = _cfg(config)
+    token = sl.load_token(_store_root(cfg))
+    if not token:
+        typer.echo("Not authenticated. Run `libbie slack token` or `login`.", err=True)
+        raise typer.Exit(1)
+
+    channels = sl.list_channels(token)
+    if not channels:
+        typer.echo("No accessible conversations.")
+        return
+    for c in channels:
+        kind = "im" if c.is_im else "mpim" if c.is_mpim else ("private" if c.is_private else "public")
+        typer.echo(f"  {c.id:<14} {kind:<8} {c.label}")
+
+
+@slack_app.command("ingest")
+def slack_ingest(
+    channels: list[str] = typer.Argument(..., help="Channel/conversation ids to ingest."),
+    oldest: Optional[float] = typer.Option(
+        None, "--oldest", help="Only messages at/after this unix timestamp (seconds)."
+    ),
+    config: Optional[Path] = ConfigOpt,
+) -> None:
+    """Ingest conversations.history for the given channels and save the graph."""
+    from . import slack as sl
+    from .lazarus import annotate_environment
+
+    cfg = _cfg(config)
+    _, gstore = _stores(cfg)
+    token = sl.load_token(_store_root(cfg))
+    if not token:
+        typer.echo("Not authenticated. Run `libbie slack token` or `login`.", err=True)
+        raise typer.Exit(1)
+
+    try:
+        nodes = sl.ingest_channels(token, list(channels), oldest=oldest)
+    except Exception as exc:
+        typer.echo(f"Slack ingest failed: {exc}", err=True)
+        raise typer.Exit(1)
+
+    graph = gstore.load()
+    for n in nodes:
+        graph.add_node(n)
+    annotate_environment(graph)
+    gstore.save(graph)
+    typer.echo(
+        f"Ingested {len(nodes)} nodes from {len(channels)} channel(s). "
+        f"Graph now has {len(graph.nodes)} nodes."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Email connector sub-app: `libbie email {gmail,imap}`
+# --------------------------------------------------------------------------- #
+email_app = typer.Typer(
+    help="Ingest a user's own email (Gmail OAuth or any IMAP mailbox).",
+    no_args_is_help=True,
+    add_completion=False,
+)
+app.add_typer(email_app, name="email")
+
+
+@email_app.command("gmail")
+def email_gmail(
+    query: Optional[str] = typer.Option(None, "--query", "-q", help="Gmail search query."),
+    label: Optional[str] = typer.Option(None, "--label", help="Restrict to a label id (e.g. INBOX)."),
+    max_results: int = typer.Option(500, "--max", help="Maximum messages to fetch."),
+    config: Optional[Path] = ConfigOpt,
+) -> None:
+    """OAuth to Gmail (readonly), ingest matching messages, and save the graph."""
+    from . import email_ingest as em
+    from .lazarus import annotate_environment
+
+    client_id = em.get_gmail_client_id()
+    client_secret = em.get_gmail_client_secret()
+    if not client_id or not client_secret:
+        typer.echo(
+            "Set $LIBBIE_GMAIL_CLIENT_ID and $LIBBIE_GMAIL_CLIENT_SECRET (an "
+            "installed-app OAuth client). Requires the 'connectors' extra.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    try:
+        creds = em.gmail_login(client_id, client_secret)
+        nodes = em.ingest_gmail(
+            creds,
+            query=query,
+            label_ids=[label] if label else None,
+            max_results=max_results,
+        )
+    except Exception as exc:
+        typer.echo(f"Gmail ingest failed: {exc}", err=True)
+        raise typer.Exit(1)
+
+    cfg = _cfg(config)
+    _, gstore = _stores(cfg)
+    graph = gstore.load()
+    for n in nodes:
+        graph.add_node(n)
+    annotate_environment(graph)
+    gstore.save(graph)
+    typer.echo(f"Ingested {len(nodes)} nodes from Gmail. Graph now has {len(graph.nodes)} nodes.")
+
+
+@email_app.command("imap")
+def email_imap(
+    host: str = typer.Option(..., "--host", help="IMAP server host (e.g. imap.gmail.com)."),
+    user: str = typer.Option(..., "--user", help="Account / login name."),
+    app_password: str = typer.Option(
+        ..., "--app-password", prompt=True, hide_input=True,
+        help="An APP PASSWORD (never your account password).",
+    ),
+    port: int = typer.Option(993, "--port", help="IMAPS port."),
+    mailbox: str = typer.Option("INBOX", "--mailbox", help="Mailbox to read."),
+    search: str = typer.Option("ALL", "--search", help="IMAP search key (default ALL)."),
+    limit: Optional[int] = typer.Option(None, "--limit", help="Keep only the most recent N."),
+    config: Optional[Path] = ConfigOpt,
+) -> None:
+    """Connect to an IMAP mailbox (app password), ingest it, and save the graph."""
+    from . import email_ingest as em
+    from .lazarus import annotate_environment
+
+    try:
+        nodes = em.ingest_imap(
+            host, user, app_password,
+            port=port, mailbox=mailbox, search=search, limit=limit,
+        )
+    except Exception as exc:
+        typer.echo(f"IMAP ingest failed: {exc}", err=True)
+        raise typer.Exit(1)
+
+    cfg = _cfg(config)
+    _, gstore = _stores(cfg)
+    graph = gstore.load()
+    for n in nodes:
+        graph.add_node(n)
+    annotate_environment(graph)
+    gstore.save(graph)
+    typer.echo(f"Ingested {len(nodes)} nodes from IMAP. Graph now has {len(graph.nodes)} nodes.")
+
+
 def main() -> None:
     # The briefing uses real typography (em dash, section sign, smart quotes);
     # make sure it survives on a Windows console / when redirected to a file.
