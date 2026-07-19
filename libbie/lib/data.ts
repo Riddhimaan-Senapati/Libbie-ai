@@ -36,7 +36,7 @@ export const brand = {
   name: "Libbie.ai",
   tagline: "Reconstruct the intent behind your pipelines.",
   oneLiner:
-    "The institutional-memory layer for compute-heavy R&D — fusing code, conversations, and domain knowledge into one queryable memory.",
+    "The institutional-memory layer for compute-heavy R&D. It fuses code, conversations, and domain knowledge into one queryable memory.",
 } as const;
 
 // Freemium counter (MR-1, MR-3). Non-functional upgrade path for the demo.
@@ -52,7 +52,7 @@ export const libbie = {
   name: "Libbie",
   role: "your chief of staff for pipeline knowledge",
   greeting:
-    "I've read this pipeline end to end — every line and every thread. Ask me why anything was built the way it was, and I'll show you the code and the conversation behind it.",
+    "I've read this pipeline end to end, every line and every thread. Ask me why anything was built the way it was, and I'll show you the code and the conversation behind it.",
   idleStatus: "Memory synced",
   thinkingLines: [
     "Cross-referencing config and threads…",
@@ -69,7 +69,7 @@ export const libbie = {
 // What Libbie proactively surfaces before you ask — the signature moment.
 export const proactiveNudge = {
   answerId: "ans-grch37",
-  title: "One decision here is load-bearing — and the person who made it has left.",
+  title: "One decision here is load-bearing, and the person who made it has left.",
   body:
     "Elena pinned this pipeline to GRCh37 for cohort concordance, 14 months ago. I kept the thread that explains it, so you can decide rather than guess.",
 } as const;

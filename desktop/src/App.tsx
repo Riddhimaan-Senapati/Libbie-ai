@@ -1,6 +1,6 @@
 import * as React from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Command, Settings as SettingsIcon, ShieldCheck, PanelLeftOpen, Lock } from "lucide-react";
+import { Command, Settings as SettingsIcon, ShieldCheck, PanelLeftOpen, Lock, Coins } from "lucide-react";
 
 import { pipeline, getCodeFile, answers, proactiveNudge, libbie } from "@/lib/data";
 import type { CodeFile, CodeRef } from "@/lib/types";
@@ -44,6 +44,8 @@ import { Settings } from "@/components/Settings";
 import { Sheet } from "@/components/Overlay";
 import { RiskPanel } from "@/components/RiskPanel";
 import { HandoverDoc } from "@/components/HandoverDoc";
+import { TokenPanel, type CallRecord } from "@/components/TokenPanel";
+import { costUsd } from "@/lib/pricing";
 import { cn } from "@/lib/utils";
 
 const DEFAULT_FILE = "conf/params.config";
@@ -55,15 +57,7 @@ export default function App() {
 
   // engine + config
   const [config, setConfig] = React.useState<AppConfig | null>(null);
-  const [status, setStatus] = React.useState<EngineStatus>({
-    running: false,
-    healthy: false,
-    engine: null,
-    model: null,
-    base_url: null,
-    pid: null,
-    message: "Engine stopped",
-  });
+  const [status, setStatus] = React.useState<EngineStatus>(DEFAULT_ENGINE_STATUS);
   const [hardware, setHardware] = React.useState<HardwareInfo | null>(null);
   const [choice, setChoice] = React.useState<EngineChoice | null>(null);
   const [models, setModels] = React.useState<ModelEntry[]>([]);
@@ -90,12 +84,25 @@ export default function App() {
   const [rightCollapsed, setRightCollapsed] = React.useState(false);
   const [riskOpen, setRiskOpen] = React.useState(false);
   const [handoverOpen, setHandoverOpen] = React.useState(false);
+  const [tokensOpen, setTokensOpen] = React.useState(false);
+
+  // Per-session token/cost ledger, appended to on every completed inference.
+  const [calls, setCalls] = React.useState<CallRecord[]>([]);
 
   const nonce = React.useRef(0);
   const reqId = React.useRef(0);
 
   const selectedFile: CodeFile = getCodeFile(selectedPath) ?? pipeline.files[0];
-  const engineLabel = hardware ? `${status.engine ?? "llama"} · ${hardware.llama_backend}` : undefined;
+  const usingCloud = (config?.chat_provider ?? "local") !== "local";
+  const engineLabel = usingCloud
+    ? config?.chat_provider === "anthropic"
+      ? `Anthropic · ${config?.anthropic_model ?? ""}`
+      : `Cloud · ${config?.openai_model ?? ""}`
+    : hardware
+      ? `${status.engine ?? "llama"} · ${hardware.llama_backend}`
+      : undefined;
+  // Chat is ready when a cloud provider is configured, or the local engine is healthy.
+  const chatReady = usingCloud || status.healthy;
 
   // ---- boot -------------------------------------------------------------
   const refreshStatus = React.useCallback(async () => {
@@ -260,6 +267,31 @@ export default function App() {
           if (id !== reqId.current) return;
           setSession((s) => (s ? { ...s, verdict: s.verdict + t } : s));
         },
+        onUsage: (u) => {
+          if (id !== reqId.current) return;
+          const provider = config?.chat_provider ?? "local";
+          // In browser-dev the call always hits a loopback server regardless of the
+          // selected provider, so only treat it as paid cloud in the real app.
+          const cloud = provider !== "local" && api.isTauri();
+          const model =
+            provider === "anthropic"
+              ? config?.anthropic_model ?? "anthropic"
+              : provider === "openai_compatible"
+                ? config?.openai_model ?? "openai"
+                : "local";
+          setCalls((cs) => [
+            ...cs,
+            {
+              model,
+              cloud,
+              inputTokens: u.inputTokens,
+              outputTokens: u.outputTokens,
+              tokensPerSec: u.tokensPerSec,
+              costUsd: cloud ? costUsd(model, u.inputTokens, u.outputTokens) : 0,
+              ts: Date.now(),
+            },
+          ]);
+        },
         onDone: () => {
           if (id !== reqId.current) return;
           setSession((s) => (s ? { ...s, streaming: false } : s));
@@ -273,14 +305,19 @@ export default function App() {
                   streaming: false,
                   verdict:
                     s.verdict ||
-                    `I couldn't reach the local engine. ${msg}\n\nStart it from the status bar, then ask again.`,
+                    `I couldn't reach the model provider. ${msg}\n\nCheck Settings (engine or API key), then ask again.`,
                 }
               : s,
           );
         },
       });
     },
-    [config?.offline_mode],
+    [
+      config?.offline_mode,
+      config?.chat_provider,
+      config?.anthropic_model,
+      config?.openai_model,
+    ],
   );
 
   const ask = React.useCallback(
@@ -300,8 +337,9 @@ export default function App() {
         answeredLocally: !!config?.offline_mode,
       });
 
-      // Best-effort: bring the chat engine up if it isn't ready yet.
-      if (!status.healthy) {
+      // Best-effort: bring the LOCAL chat engine up if needed. A cloud provider
+      // needs no local engine, so skip this gate entirely.
+      if (!usingCloud && !status.healthy) {
         const s = await handleStart();
         if (!s?.healthy) {
           setSession((cur) =>
@@ -310,7 +348,7 @@ export default function App() {
                   ...cur,
                   streaming: false,
                   verdict:
-                    "The local engine isn't running yet. Open Settings, pick a GGUF model, and press Start engine — then ask me again.",
+                    "The local engine isn't running yet. Open Settings, pick a GGUF model and press Start engine, or choose a cloud provider, then ask me again.",
                 }
               : cur,
           );
@@ -329,7 +367,15 @@ export default function App() {
       if (retrieved.code[0]) focusCode(retrieved.code[0]);
       await runInference(question, retrieved, "technical");
     },
-    [status.healthy, config?.offline_mode, indexInfo.indexed, focusCode, handleStart, runInference],
+    [
+      usingCloud,
+      status.healthy,
+      config?.offline_mode,
+      indexInfo.indexed,
+      focusCode,
+      handleStart,
+      runInference,
+    ],
   );
 
   const onViewChange = React.useCallback(
@@ -406,6 +452,7 @@ export default function App() {
             onStartEmbed={handleStartEmbed}
             onStopEmbed={handleStopEmbed}
             onBuildIndex={handleBuildIndex}
+            onRefreshIndex={refreshIndex}
           />
         </main>
       </div>
@@ -421,6 +468,7 @@ export default function App() {
         onStart={handleStart}
         onStop={handleStop}
         onAsk={() => setAskOpen(true)}
+        onTokens={() => setTokensOpen(true)}
         onSettings={() => setScreen("settings")}
       />
 
@@ -479,7 +527,7 @@ export default function App() {
                   view={view}
                   onViewChange={onViewChange}
                   statusLine={statusLine}
-                  engineReady={status.healthy}
+                  engineReady={chatReady}
                   engineLabel={engineLabel}
                   onAskNudge={askNudge}
                   onFocusCode={focusCode}
@@ -500,7 +548,7 @@ export default function App() {
         open={askOpen}
         onOpenChange={setAskOpen}
         onAsk={ask}
-        disabled={!status.healthy}
+        disabled={!chatReady}
       />
 
       <Sheet open={riskOpen} onClose={() => setRiskOpen(false)} title="Libbie's watchlist">
@@ -515,6 +563,10 @@ export default function App() {
       <Sheet open={handoverOpen} onClose={() => setHandoverOpen(false)} title="Handover document" width={760}>
         <HandoverDoc />
       </Sheet>
+
+      <Sheet open={tokensOpen} onClose={() => setTokensOpen(false)} title="Token & cost usage" width={520}>
+        <TokenPanel calls={calls} />
+      </Sheet>
     </div>
   );
 }
@@ -528,6 +580,7 @@ function TopBar({
   onStart,
   onStop,
   onAsk,
+  onTokens,
   onSettings,
   settingsActive,
 }: {
@@ -537,6 +590,7 @@ function TopBar({
   onStart: () => void;
   onStop: () => void;
   onAsk: () => void;
+  onTokens?: () => void;
   onSettings: () => void;
   settingsActive?: boolean;
 }) {
@@ -576,6 +630,19 @@ function TopBar({
             ⌘K
           </kbd>
         </button>
+
+        {onTokens && (
+          <button
+            type="button"
+            onClick={onTokens}
+            aria-label="Token usage"
+            title="Token & cost usage"
+            className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <Coins className="size-3.5" aria-hidden />
+            <span className="hidden sm:inline">Tokens</span>
+          </button>
+        )}
 
         <button
           type="button"

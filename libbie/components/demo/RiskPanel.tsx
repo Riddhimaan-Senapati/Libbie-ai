@@ -248,7 +248,7 @@ export function RiskPanel() {
             <p className="mt-1 text-sm text-muted-foreground">
               Dependency &amp; reference posture for{" "}
               <span className="font-mono text-foreground">{pipeline.name}</span>. Pinned versions
-              are intentional — review the cautions before any upgrade.
+              are intentional, so review the cautions before any upgrade.
             </p>
           </div>
         </div>

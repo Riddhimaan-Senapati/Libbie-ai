@@ -139,7 +139,7 @@ export function AskLibbie({
 
             {disabled && (
               <div className="border-t border-border bg-warn/10 px-4 py-2 text-[11px] text-warn">
-                The local engine isn't ready yet — start it from the status bar or Settings.
+                The local engine isn't ready yet. Start it from the status bar or Settings.
               </div>
             )}
           </motion.div>

@@ -34,17 +34,17 @@ const STEPS: { n: string; title: string; body: string }[] = [
   {
     n: "01",
     title: "She reads code and conversations",
-    body: "Libbie indexes the repository alongside its Slack threads, PR reviews, meeting notes and email — then links each decision to the line it explains.",
+    body: "Libbie indexes the repository alongside its Slack threads, PR reviews, meeting notes and email, then links each decision to the line it explains.",
   },
   {
     n: "02",
     title: "You ask her anything",
-    body: "Ask “why GRCh37?” the way you'd ask the person who left. No query language, no spelunking through history.",
+    body: "Ask “why GRCh37?” the way you'd ask the person who left, without a query language or hours digging through history.",
   },
   {
     n: "03",
     title: "She answers, with receipts",
-    body: "A one-line verdict, then the dual citation — code and conversation — rendered in technical or executive form.",
+    body: "A one-line verdict, then the dual citation (code and conversation), written in technical or executive form.",
   },
 ];
 
@@ -71,7 +71,7 @@ export function HowSheAnswers() {
                 <span className="text-conversation">conversation</span>.
               </>
             }
-            description="The dual citation is Libbie's trust backbone. The line that does the work, and the human conversation that justified it — converging on the recovered intent."
+            description="The dual citation is how Libbie earns your trust: the line that does the work, plus the conversation that justified it, both pointing at the same intent."
           />
         </Reveal>
 
@@ -191,7 +191,7 @@ export function HowSheAnswers() {
             </div>
             <p className="text-sm leading-relaxed text-muted-foreground">{ANSWER.technical.body[1]}</p>
             <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-border pt-4">
-              <span className="text-xs text-muted-foreground">Both sources, same decision —</span>
+              <span className="text-xs text-muted-foreground">Both sources, same decision:</span>
               <span className="inline-flex items-center gap-1.5 rounded-md border border-code bg-code-soft px-2 py-1 font-mono text-[11px] text-code">
                 <FileCode2 className="size-3" aria-hidden />
                 {codeRef.path}:{codeRef.lineStart}

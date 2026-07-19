@@ -1,0 +1,17 @@
+[
+  {
+    "type": "message",
+    "user": "U02DANIEL",
+    "ts": "1613037600.000200",
+    "thread_ts": "1613037600.000200",
+    "text": "For VEP annotation we need to pin the cache-version to 105 so it matches the GRCh38 assembly the calls were made on. Do not let it auto-pull a newer cache mid-project.",
+    "reactions": [{ "name": "+1", "count": 1, "users": ["U01PRIYA"] }]
+  },
+  {
+    "type": "message",
+    "user": "U01PRIYA",
+    "ts": "1613038800.000300",
+    "thread_ts": "1613037600.000200",
+    "text": "agreed, cache version 105 it is. keep it fixed for reproducibility."
+  }
+]

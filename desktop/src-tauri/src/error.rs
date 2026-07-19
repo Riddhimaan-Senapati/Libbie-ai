@@ -44,6 +44,8 @@ pub enum AppError {
     Config { message: String },
     /// The request itself was invalid (e.g. an empty corpus to index).
     InvalidInput { message: String },
+    /// A GitHub integration operation (device flow, repo listing, clone) failed.
+    Github { message: String },
 }
 
 impl AppError {
@@ -62,7 +64,8 @@ impl AppError {
             | AppError::VectorStoreUnavailable { message }
             | AppError::VectorStore { message }
             | AppError::Config { message }
-            | AppError::InvalidInput { message } => message,
+            | AppError::InvalidInput { message }
+            | AppError::Github { message } => message,
         }
     }
 
@@ -106,6 +109,9 @@ impl AppError {
     }
     pub fn invalid_input(m: impl Into<String>) -> Self {
         AppError::InvalidInput { message: m.into() }
+    }
+    pub fn github(m: impl Into<String>) -> Self {
+        AppError::Github { message: m.into() }
     }
 }
 

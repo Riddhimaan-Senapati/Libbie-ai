@@ -1,0 +1,18 @@
+Title: Transcript quantification in the cohortA RNA-seq dataset
+Authors: S. Ramirez, W. Zhang
+Year: 2021
+DOI: 10.1234/rnaseq.2021.02
+
+Abstract
+We quantified transcript abundance for cohortA using salmon with 100 bootstrap replicates.
+
+Methods
+Reads were quantified against the GENCODE v38 transcriptome index with salmon in stranded-reverse
+(ISR) library mode. Bootstrap replicates were used to estimate inferential uncertainty.
+
+Results
+We quantified 58,204 transcripts in rnaseq_sampleA_quant across the cohort (Figure 3).
+Bootstrap uncertainty was below 5% for 92% of expressed transcripts.
+
+Discussion
+The stranded library type was essential for correctly resolving overlapping antisense transcripts.

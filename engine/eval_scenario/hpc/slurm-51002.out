@@ -1,0 +1,10 @@
+Currently Loaded Modules:
+  1) gatk/4.2.6.1   2) samtools/1.15
+
+Running: gatk HaplotypeCaller --reference /refs/GRCh38/GRCh38_full_analysis_set.fasta --input /data/aligned/cohortA_sample02.bam --output /data/results/cohortA_sample02.vcf --min-base-quality-score 18 --standard-min-confidence-threshold-for-calling 30 --native-pair-hmm-threads 8
+[GATK] HaplotypeCaller v4.2.6.1
+[GATK] reference build: GRCh38 (GRCh38_full_analysis_set)
+[GATK] min-base-quality-score = 18
+[GATK] processing intervals: whole genome
+[GATK] wrote /data/results/cohortA_sample02.vcf (3151402 variants)
+Done. exit 0

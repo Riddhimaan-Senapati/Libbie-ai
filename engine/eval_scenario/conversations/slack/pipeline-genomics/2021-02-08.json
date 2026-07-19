@@ -1,0 +1,31 @@
+[
+  {
+    "type": "message",
+    "user": "U01PRIYA",
+    "ts": "1612800000.000200",
+    "thread_ts": "1612800000.000200",
+    "text": "For the new 2021 cohort (cohortA) I'm going with GRCh38 (GRCh38_full_analysis_set), not GRCh37. This cohort is brand new so there is no legacy comparability constraint, and GRCh38 is what the annotation caches expect. Locking the reference build now.",
+    "reactions": [{ "name": "+1", "count": 2, "users": ["U02DANIEL", "U04WEI"] }]
+  },
+  {
+    "type": "message",
+    "user": "U02DANIEL",
+    "ts": "1612801200.000300",
+    "thread_ts": "1612800000.000200",
+    "text": "sounds right. what base quality filter are we using for the caller?"
+  },
+  {
+    "type": "message",
+    "user": "U01PRIYA",
+    "ts": "1612802400.000400",
+    "thread_ts": "1612800000.000200",
+    "text": "min-base-quality-score 20 for the first pass. 20 is the GATK default and a sensible starting point. We can revisit if it drops too many hets."
+  },
+  {
+    "type": "message",
+    "user": "U02DANIEL",
+    "ts": "1612803600.000500",
+    "thread_ts": "1612800000.000200",
+    "text": "ok. keeping standard-min-confidence-threshold-for-calling at the GATK default too then."
+  }
+]

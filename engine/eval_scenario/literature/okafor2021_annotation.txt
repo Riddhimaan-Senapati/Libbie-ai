@@ -1,0 +1,18 @@
+Title: Functional annotation of germline variants in cohortA
+Authors: D. Okafor, P. Nair
+Year: 2021
+DOI: 10.1234/annot.2021.03
+
+Abstract
+We annotated the cohortA germline calls with Ensembl VEP cache version 105.
+
+Methods
+The germline VCF was annotated with Ensembl VEP using cache version 105, pinned to match the
+GRCh38 assembly the calls were made on.
+
+Results
+Functional consequences were assigned to 3,142,880 variants in cohortA_annotated (Figure 1).
+We found 214 predicted loss-of-function variants in known disease genes.
+
+Discussion
+Pinning the VEP cache version was necessary to keep annotations reproducible across re-runs.

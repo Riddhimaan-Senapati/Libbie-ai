@@ -2,106 +2,162 @@
 
 **The institutional-memory layer for compute-heavy R&D.**
 
-When a computational researcher leaves a team, the *intent* behind their pipelines leaves
-with them. The code stays on the cluster, but the reasoning — why a parameter was set, which
-reference build was assumed, what was tried and discarded — lives in scattered conversations
-that decay on staff turnover. Libbie.ai reconstructs that intent.
+When a computational researcher leaves, the code stays on the cluster but the *reasoning*
+leaves with them: why a parameter was set, which reference build was assumed, what was tried
+and dropped. Libbie reconstructs that reasoning. It reads what a lab actually produced (code,
+HPC job records, chat and email, and papers), links each decision to the line and the
+conversation behind it, and answers "why was this built this way?" with a grounded answer that
+**cites both the code and the conversation that justified it**.
 
-Libbie.ai fuses three sources into one queryable memory — **code artifacts**, **conversational
-provenance** (chat, PRs, meetings, email), and **domain knowledge** — and answers natural-language
-questions like *"why was this built this way?"* with a grounded answer that **dual-cites** both the
-exact code and the original conversation that justified it.
-
-> The lead capability is **fusion**: a dual-cited answer that links a piece of code to the
-> conversation that explains it — what code-only assistants and horizontal knowledge tools can't do.
+The core feature is **fusion**: an answer that ties a piece of code to the discussion that
+explains it, which code-only assistants and generic knowledge tools can't do.
 
 ---
 
-## Status
+## Download the desktop app
 
-**Phase 0 — MVP (built).** A deployed-quality, visually polished demo. Per `docs/mvp_plan.md`
-the rule is *fake the engine, never fake the experience*: all content is authored,
-version-controlled sample data, while the user-visible behaviour is real. The real
-ingestion / retrieval / linking / local-inference stack is the main plan (`docs/main_plan.md`).
+The air-gapped desktop app runs Libbie fully on your machine: local models by default, or any
+cloud API key you choose. Grab the installer for your OS from the latest release:
 
-The MVP demonstrates: the dual-cited "magic moment", a technical ↔ executive view toggle,
-a risk & staleness panel, one-click handover-document export, a freemium usage counter, a
-"scanning at scale" indexing animation, and a local / air-gapped mode (a faked UI toggle in
-the web MVP).
+| OS | Installer | Download |
+|---|---|---|
+| **Windows** | `.exe` (NSIS) / `.msi` | [Latest release ↓](https://github.com/Riddhimaan-Senapati/Libbie-ai/releases/latest) |
+| **macOS** | `.dmg` (Apple Silicon + Intel) | [Latest release ↓](https://github.com/Riddhimaan-Senapati/Libbie-ai/releases/latest) |
+| **Linux** | `.AppImage` / `.deb` / `.rpm` | [Latest release ↓](https://github.com/Riddhimaan-Senapati/Libbie-ai/releases/latest) |
 
-**Air-gapped desktop app (built).** The `desktop/` app makes the local path real: a Tauri
-client running fully local inference (llama.cpp today, vLLM on NVIDIA hosts) with semantic
-RAG over an embedded vector store and zero runtime network egress. See `desktop/README.md`.
+> Installers are built and attached to a GitHub Release by CI (`.github/workflows/release.yml`)
+> whenever a `v*` tag is pushed. If the release list is empty, the maintainer hasn't tagged a
+> build yet, so you can build one yourself with `cd desktop && npm run app:build` (see
+> [`desktop/README.md`](desktop/README.md)).
 
-## Repository layout
+After installing, open **Settings** to pick how you want to run: a local model, a cloud
+provider, or a repo pulled straight from GitHub. Details below.
 
-```
-Libbie-ai/
-├─ libbie/        # the Next.js web app (see libbie/README.md)
-├─ desktop/       # the air-gapped Tauri desktop app (see desktop/README.md, desktop/BUILD_SPEC.md)
-├─ docs/          # product & engineering docs
-│  ├─ Libbie.ai_MVP_PRD.md   # product requirements (MVP)
-│  ├─ mvp_plan.md            # MVP build plan (Phase 0)
-│  └─ main_plan.md           # full engineering plan (the real product)
-└─ README.md      # this file
-```
+---
 
-The **desktop app** (`desktop/`) is Libbie's on-prem / air-gapped deployment: the same
-copilot experience, but all inference runs locally (llama.cpp today, vLLM on NVIDIA hosts)
-via a Tauri Rust core, with zero runtime network egress. It reuses the web app's design
-system verbatim.
+## What's in the repo
+
+Libbie ships as three parts that share one design and one goal:
+
+| Directory | What it is |
+|---|---|
+| [`desktop/`](desktop/README.md) | The **air-gapped desktop app** (Tauri + Rust). Local inference via llama.cpp/vLLM, or any cloud provider you configure. The shipped product. |
+| [`libbie/`](libbie/README.md) | The **web demo** (Next.js). The polished "magic moment" over authored sample data — the pitch surface. |
+| [`engine/`](engine/README.md) | The **provenance-graph engine** (Python). The real backend: ingest → join → graph → briefing, with a GitHub integration and an edge-quality eval. |
+
+---
+
+## Features
+
+### Desktop app (`desktop/`)
+- **Ask "why", get a dual-cited answer** — a one-line verdict, then the exact code line *and*
+  the conversation that justified it.
+- **Run it your way** — pick a **chat provider** in Settings:
+  - **Local** (llama.cpp / vLLM) — no API key, nothing leaves the machine.
+  - **Any OpenAI-compatible API** — one base-URL + key + model field covers OpenAI, Groq,
+    Together, Mistral, OpenRouter, or a self-hosted vLLM.
+  - **Anthropic** — the Messages API natively.
+- **Bring your own model** — choose a GGUF already on disk, or **download one from Hugging
+  Face** inside the app (list a repo's `.gguf` files and pull one with a progress bar).
+- **Token & cost tracking** — a Tokens panel shows input/output tokens per call and for the
+  session, tokens/sec for local models, and an estimated dollar cost for cloud models from an
+  editable price table.
+- **Index any GitHub repo** — connect your GitHub account (OAuth device flow), pick any repo
+  you can access including private and org repos, and Libbie clones and indexes it so you can
+  ask about *your* code.
+- **Semantic retrieval** — an on-disk `sqlite-vec` index (nomic-embed) with keyword fallback.
+- **Air-gapped by default** — strict mode keeps every request on `127.0.0.1` and disables all
+  egress (cloud providers and downloads included). Turn it off to reach cloud services.
+
+### Web demo (`libbie/`)
+The landing page and a live `/demo`: the dual-cited magic moment, a technical ↔ executive
+toggle, a risk & staleness panel, one-click handover export, and a local-mode toggle. Runs on
+authored sample data, clearly labelled in the UI.
+
+### Engine (`engine/`)
+- **Ingest** SLURM/HPC job records, git history, Slack/`.eml` conversations, and PDFs into
+  typed nodes.
+- **Join layer** — candidate generation across artifact classes, LLM adjudication, and a
+  commit-vs-hypothesis rule (wrong edges are worse than missing ones).
+- **Inheritance Briefing** — a generated markdown handover doc per pipeline.
+- **GitHub ingest** — `libbie github login/repos/ingest` to pull any accessible repo into the
+  graph.
+- **Edge-quality eval** — precision/recall per edge type against a hand-labelled gold set.
+
+---
 
 ## Quick start
 
-```bash
-cd libbie
-npm install
-npm run dev      # http://localhost:3000
-npm run build    # production build
-```
-
-- `/` — public landing page (problem → fusion → how-it-works → on-prem → pricing).
-- `/demo` — the live demo (the magic moment, risk panel, handover export, local mode).
-
-### Desktop (air-gapped)
-
+### Desktop app (from source)
 ```bash
 cd desktop
 npm install
-npm run app:dev     # runs the Tauri app; manages a local llama-server itself
+npm run app:dev        # runs the Tauri app; manages a local llama-server for you
+```
+Then open **Settings** and either point at a local GGUF, paste a cloud API key, or connect
+GitHub. Full walkthrough: [`desktop/README.md`](desktop/README.md).
+
+### Web demo
+```bash
+cd libbie
+npm install
+npm run dev            # http://localhost:3000  (/ and /demo)
 ```
 
-Stage a GGUF model first (on a connected machine, then copy to the air-gapped host);
-full instructions and the architecture are in `desktop/README.md` and
-`desktop/BUILD_SPEC.md`. Real local inference: ask a "why" question and get a streamed,
-dual-cited answer with nothing leaving the machine.
+### Engine
+```bash
+cd engine
+python -m venv .venv && ./.venv/Scripts/pip install -e ".[dev,git]"
+libbie ingest --all --sample && libbie join && libbie brief --pipeline germline
+```
 
-## Stack
+---
 
-**Web app** (`libbie/`): Next.js 16 (App Router) · React 19 · TypeScript · Tailwind v4 ·
-shadcn/ui (base-ui) · motion · recharts · lucide-react.
+## Using the key features
 
-**Desktop app** (`desktop/`): Tauri 2 (Rust core) · React 19 · Vite · Tailwind v4 · local
-inference via **llama.cpp** (`llama-server`, GGUF) with **vLLM** on Linux+NVIDIA hosts ·
-semantic RAG over an embedded **sqlite-vec** index (nomic-embed), lexical fallback.
+**Pick a provider (desktop).** Settings → *Chat provider*. Local keeps the air-gap; a cloud
+provider needs strict air-gap turned off. For OpenAI-compatible endpoints, set the base URL,
+key, and model; for Anthropic, set the key and model. Keys are stored by the Rust core and are
+never handed back to the UI.
 
-The full server product additionally targets FastAPI, hybrid retrieval + reranking, and a
-code↔conversation link graph — see `docs/main_plan.md`.
+**Download a model (desktop).** Settings → *Download a model from HuggingFace*. Enter a GGUF
+repo (e.g. `Qwen/Qwen2.5-0.5B-Instruct-GGUF`), list its files, and download one into your
+models folder. Disabled in strict air-gapped mode.
 
-## Hero scenario (sample data)
+**Track tokens and cost (desktop).** Click **Tokens** in the top bar. Every answer records its
+input/output tokens; local models show tokens/sec, cloud models show an estimated cost you can
+tune in `desktop/src/lib/pricing.ts`.
 
-A genomics germline variant-calling pipeline whose author (Elena Vasquez) has left. Libbie.ai
-reconstructs why decisions were made — e.g. *"why GRCh37 and not GRCh38?"* — citing the exact
-config line **and** the months-old Slack thread that justified it. All demo data is clearly
-labelled as sample data in the UI.
+**Index a GitHub repo (desktop).** Settings → *Connect GitHub*. Authorize via the device-flow
+code, pick a repo, and index it. Needs a registered GitHub OAuth App client id (set
+`LIBBIE_GITHUB_CLIENT_ID` or paste it in Settings) and strict air-gap off. For SSO-enforced
+orgs, authorize the token for the org first.
 
-## Deployment posture
+**Ingest a repo into the graph (engine).** `libbie github login` → `libbie github repos` →
+`libbie github ingest <owner/repo>`, then `libbie join` and `libbie brief`.
 
-Hosted SaaS (frontend on Vercel, containerized backend) and a fully **on-prem / air-gapped**
-path — the difference is configuration, not a fork. The air-gapped tier is the premium,
-regulated-buyer (pharma/biotech) offering: no code or conversational data leaves the
-customer's environment.
+---
 
-The air-gapped tier ships two ways: the **desktop app** (`desktop/`, built) for single-host
-/ workstation use, and a server-side Docker Compose stack from the same images (planned, see
-`docs/main_plan.md`) for shared on-prem GPU hosts.
+## Building & releasing the desktop app
+
+Build installers on the target OS (Tauri does not cross-compile):
+```bash
+cd desktop && npm run app:build
+# artifacts in src-tauri/target/release/bundle/ (nsis/msi, dmg, appimage/deb/rpm)
+```
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds installers for Windows,
+macOS, and Linux and attaches them to a GitHub Release, the source of the download links above.
+
+## Licensing posture
+
+MIT, and permissive throughout. Runtime dependencies are MIT / BSD / Apache-2.0 only, with no
+GPL/AGPL/SSPL. The engine avoids the common copyleft traps in this space (pypdf
+over PyMuPDF, GitPython over pygit2, reqwest/httpx over LGPL clients). See
+[`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md) for the full audit.
+
+## Docs
+- [`desktop/README.md`](desktop/README.md) — desktop app: providers, models, GitHub, air-gap.
+- [`engine/README.md`](engine/README.md) — the provenance engine and CLI.
+- [`libbie/README.md`](libbie/README.md) — the web demo.
+- [`docs/main_plan.md`](docs/main_plan.md) — the full engineering plan.
+- [`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md) — what's built, license audit, security review, eval.

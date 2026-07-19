@@ -67,7 +67,7 @@ export function FreemiumCounter({ className }: { className?: string }) {
             }
           />
           <TooltipContent>
-            Unlock unlimited, air-gapped queries — Enterprise
+            Unlimited air-gapped queries, on Enterprise
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>

@@ -1,0 +1,10 @@
+# Config for the eval_scenario ground-truth measurement.
+# Uses the shipped deterministic mock backend (air-gapped, no API key) and an
+# isolated store so it never touches the default ./libbie_store.
+llm:
+  backend: mock
+join:
+  commit_threshold: 0.75
+  time_locality_days: 14
+store:
+  root: ./eval_scenario/.eval_store

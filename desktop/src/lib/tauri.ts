@@ -29,6 +29,18 @@ export interface AppConfig {
   vllm_max_model_len: number | null;
   vllm_quantization: string | null;
   vllm_dtype: string;
+  // cloud providers (used only when offline_mode is off)
+  chat_provider: "local" | "openai_compatible" | "anthropic";
+  openai_base_url: string;
+  openai_api_key: string | null;
+  openai_model: string;
+  openai_embed_model: string;
+  anthropic_base_url: string;
+  anthropic_api_key: string | null;
+  anthropic_model: string;
+  // GitHub integration (OAuth device flow)
+  github_token: string | null;
+  github_client_id: string;
 }
 
 export interface HardwareInfo {
@@ -73,8 +85,16 @@ export interface ChatOptions {
   top_p?: number;
 }
 
+/** Per-call token accounting (mirrors Rust `StreamEvent::Usage`). */
+export interface Usage {
+  inputTokens: number;
+  outputTokens: number;
+  tokensPerSec: number | null;
+}
+
 export type StreamEvent =
   | { type: "token"; text: string }
+  | { type: "usage"; inputTokens: number; outputTokens: number; tokensPerSec: number | null }
   | { type: "done"; finishReason: string }
   | { type: "error"; message: string };
 
@@ -152,6 +172,12 @@ export interface IndexStatus {
 export const isTauri = (): boolean =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+/** Lazy-import the Tauri IPC bridge and invoke a command (app runtime only). */
+async function ipc<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<T>(cmd, args);
+}
+
 // Dev-mode default endpoint (matches AppConfig defaults).
 const DEV_BASE_URL = "http://127.0.0.1:51820";
 
@@ -181,23 +207,27 @@ function devConfig(): AppConfig {
     vllm_max_model_len: null,
     vllm_quantization: null,
     vllm_dtype: "auto",
+    chat_provider: "local",
+    openai_base_url: "https://api.openai.com/v1",
+    openai_api_key: null,
+    openai_model: "gpt-4o-mini",
+    openai_embed_model: "text-embedding-3-small",
+    anthropic_base_url: "https://api.anthropic.com",
+    anthropic_api_key: null,
+    anthropic_model: "claude-sonnet-5",
+    github_token: null,
+    github_client_id: "",
   };
   return stored ? { ...base, ...JSON.parse(stored) } : base;
 }
 
 export async function getConfig(): Promise<AppConfig> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<AppConfig>("get_config");
-  }
+  if (isTauri()) return ipc<AppConfig>("get_config");
   return devConfig();
 }
 
 export async function setConfig(config: AppConfig): Promise<AppConfig> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<AppConfig>("set_config", { config });
-  }
+  if (isTauri()) return ipc<AppConfig>("set_config", { config });
   localStorage.setItem(DEV_CONFIG_KEY, JSON.stringify(config));
   return config;
 }
@@ -207,10 +237,7 @@ export async function setConfig(config: AppConfig): Promise<AppConfig> {
 // ---------------------------------------------------------------------------
 
 export async function getHardware(): Promise<HardwareInfo> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<HardwareInfo>("get_hardware");
-  }
+  if (isTauri()) return ipc<HardwareInfo>("get_hardware");
   return {
     os: "browser",
     arch: navigator.userAgent.includes("Win") ? "x86_64" : "unknown",
@@ -223,21 +250,21 @@ export async function getHardware(): Promise<HardwareInfo> {
 }
 
 export async function getEngineChoice(): Promise<EngineChoice> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<EngineChoice>("get_engine_choice");
-  }
+  if (isTauri()) return ipc<EngineChoice>("get_engine_choice");
   return { engine: "llama", reason: "Browser dev: external llama-server." };
 }
 
-export async function engineStatus(): Promise<EngineStatus> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<EngineStatus>("engine_status");
-  }
-  // Dev: probe the external server's health directly.
+/**
+ * Dev-only: probe a loopback engine's `/health` and report an `EngineStatus`.
+ * Used by both the chat and embedding engine status fallbacks.
+ */
+async function devEngineStatus(
+  port: number,
+  model: string | null,
+  msg: { ready: string; down: string; unreachable: string },
+): Promise<EngineStatus> {
   const cfg = devConfig();
-  const base = `http://${cfg.host}:${cfg.chat_port}`;
+  const base = `http://${cfg.host}:${port}`;
   try {
     const r = await fetch(`${base}/health`);
     const healthy = r.ok && (await r.text()).includes("ok");
@@ -245,10 +272,10 @@ export async function engineStatus(): Promise<EngineStatus> {
       running: healthy,
       healthy,
       engine: "llama",
-      model: cfg.chat_model,
+      model,
       base_url: base,
       pid: null,
-      message: healthy ? "External llama-server ready (dev)" : "No engine on loopback",
+      message: healthy ? msg.ready : msg.down,
     };
   } catch {
     return {
@@ -258,33 +285,34 @@ export async function engineStatus(): Promise<EngineStatus> {
       model: null,
       base_url: base,
       pid: null,
-      message: "No engine reachable on loopback",
+      message: msg.unreachable,
     };
   }
 }
 
+export async function engineStatus(): Promise<EngineStatus> {
+  if (isTauri()) return ipc<EngineStatus>("engine_status");
+  // Dev: probe the external server's health directly.
+  const cfg = devConfig();
+  return devEngineStatus(cfg.chat_port, cfg.chat_model, {
+    ready: "External llama-server ready (dev)",
+    down: "No engine on loopback",
+    unreachable: "No engine reachable on loopback",
+  });
+}
+
 export async function startEngine(): Promise<EngineStatus> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<EngineStatus>("start_engine");
-  }
+  if (isTauri()) return ipc<EngineStatus>("start_engine");
   // Dev: the server is managed outside the browser; just report status.
   return engineStatus();
 }
 
 export async function stopEngine(): Promise<void> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("stop_engine");
-    return;
-  }
+  if (isTauri()) await ipc<void>("stop_engine");
 }
 
 export async function listModels(): Promise<ModelEntry[]> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<ModelEntry[]>("list_models");
-  }
+  if (isTauri()) return ipc<ModelEntry[]>("list_models");
   const cfg = devConfig();
   return cfg.chat_model
     ? [{ name: cfg.chat_model, path: cfg.chat_model, size_mb: 0 }]
@@ -297,6 +325,7 @@ export async function listModels(): Promise<ModelEntry[]> {
 
 export interface AskHandlers {
   onToken: (text: string) => void;
+  onUsage?: (usage: Usage) => void;
   onDone: (finishReason: string) => void;
   onError: (message: string) => void;
 }
@@ -315,6 +344,12 @@ export async function askLibbie(
     const channel = new Channel<StreamEvent>();
     channel.onmessage = (evt) => {
       if (evt.type === "token") handlers.onToken(evt.text);
+      else if (evt.type === "usage")
+        handlers.onUsage?.({
+          inputTokens: evt.inputTokens,
+          outputTokens: evt.outputTokens,
+          tokensPerSec: evt.tokensPerSec,
+        });
       else if (evt.type === "done") handlers.onDone(evt.finishReason);
       else if (evt.type === "error") handlers.onError(evt.message);
     };
@@ -340,6 +375,7 @@ async function devStreamChat(
         model: "local",
         messages,
         stream: true,
+        stream_options: { include_usage: true },
         temperature: options.temperature ?? 0.2,
         top_p: options.top_p ?? 0.9,
         max_tokens: options.max_tokens ?? 768,
@@ -355,6 +391,9 @@ async function devStreamChat(
   }
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
+  // Browser-dev fallback: main's shared SSE parser handles tokens/done. Real
+  // token/cost accounting runs through the Tauri Channel in the shipped app
+  // (see the isTauri() branch), so the dev path doesn't emit usage.
   const parser = new ChatSSEParser();
   for (;;) {
     const { value, done } = await reader.read();
@@ -378,20 +417,8 @@ async function devStreamChat(
 // ---------------------------------------------------------------------------
 
 export async function embedTexts(inputs: string[]): Promise<number[][]> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<number[][]>("embed_texts", { inputs });
-  }
-  const cfg = devConfig();
-  const url = `http://${cfg.host}:${cfg.embed_port}/v1/embeddings`;
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "local", input: inputs }),
-  });
-  if (!r.ok) throw new Error(`Embedding engine returned ${r.status}`);
-  const json = await r.json();
-  return (json.data ?? []).map((d: { embedding: number[] }) => d.embedding);
+  if (isTauri()) return ipc<number[][]>("embed_texts", { inputs });
+  return devEmbedBatch(inputs);
 }
 
 // ---------------------------------------------------------------------------
@@ -399,50 +426,22 @@ export async function embedTexts(inputs: string[]): Promise<number[][]> {
 // ---------------------------------------------------------------------------
 
 export async function startEmbedEngine(): Promise<EngineStatus> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<EngineStatus>("start_embed_engine");
-  }
+  if (isTauri()) return ipc<EngineStatus>("start_embed_engine");
   return embedEngineStatus();
 }
 
 export async function stopEmbedEngine(): Promise<void> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("stop_embed_engine");
-  }
+  if (isTauri()) await ipc<void>("stop_embed_engine");
 }
 
 export async function embedEngineStatus(): Promise<EngineStatus> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<EngineStatus>("embed_engine_status");
-  }
+  if (isTauri()) return ipc<EngineStatus>("embed_engine_status");
   const cfg = devConfig();
-  const base = `http://${cfg.host}:${cfg.embed_port}`;
-  try {
-    const r = await fetch(`${base}/health`);
-    const healthy = r.ok && (await r.text()).includes("ok");
-    return {
-      running: healthy,
-      healthy,
-      engine: "llama",
-      model: cfg.embed_model,
-      base_url: base,
-      pid: null,
-      message: healthy ? "Embeddings ready (dev)" : "No embedding engine on loopback",
-    };
-  } catch {
-    return {
-      running: false,
-      healthy: false,
-      engine: null,
-      model: null,
-      base_url: base,
-      pid: null,
-      message: "No embedding engine reachable",
-    };
-  }
+  return devEngineStatus(cfg.embed_port, cfg.embed_model, {
+    ready: "Embeddings ready (dev)",
+    down: "No embedding engine on loopback",
+    unreachable: "No embedding engine reachable",
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -479,10 +478,7 @@ async function devEmbedBatch(texts: string[]): Promise<number[][]> {
 }
 
 export async function indexStatus(): Promise<IndexStatus> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<IndexStatus>("index_status");
-  }
+  if (isTauri()) return ipc<IndexStatus>("index_status");
   return {
     indexed: devIndex.length > 0,
     count: devIndex.length,
@@ -491,10 +487,7 @@ export async function indexStatus(): Promise<IndexStatus> {
 }
 
 export async function buildIndex(chunks: Chunk[]): Promise<IndexStatus> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<IndexStatus>("build_index", { chunks });
-  }
+  if (isTauri()) return ipc<IndexStatus>("build_index", { chunks });
   // Dev: embed each chunk (prefixed for nomic) and keep an in-memory index.
   devIndex.length = 0;
   for (let i = 0; i < chunks.length; i += 16) {
@@ -516,10 +509,7 @@ export async function vectorSearch(
   k: number,
   kind?: string,
 ): Promise<Hit[]> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<Hit[]>("vector_search", { query, k, kind: kind ?? null });
-  }
+  if (isTauri()) return ipc<Hit[]>("vector_search", { query, k, kind: kind ?? null });
   // Dev: embed the query, cosine over the in-memory index.
   const [q] = await devEmbedBatch([`search_query: ${query}`]);
   if (!q) return [];
@@ -539,5 +529,166 @@ export async function vectorSearch(
     similarity: Math.max(0, Math.min(1, x.sim)),
   }));
 }
+
+// ---------------------------------------------------------------------------
+// HuggingFace model download
+// ---------------------------------------------------------------------------
+
+export interface HfFile {
+  path: string;
+  size_mb: number;
+}
+
+export type DownloadEvent =
+  | { type: "progress"; downloaded: number; total: number; fraction: number }
+  | { type: "done"; path: string }
+  | { type: "error"; message: string };
+
+export interface DownloadHandlers {
+  onProgress: (downloaded: number, total: number, fraction: number) => void;
+  onDone: (path: string) => void;
+  onError: (message: string) => void;
+}
+
+/** List the .gguf files available in a HuggingFace repo. */
+export async function listHfGguf(
+  repo: string,
+  revision?: string,
+  token?: string,
+): Promise<HfFile[]> {
+  if (isTauri()) {
+    return ipc<HfFile[]>("list_hf_gguf", {
+      repo,
+      revision: revision ?? null,
+      token: token ?? null,
+    });
+  }
+  // Browser dev: hit the public HF tree API directly (may be CORS-limited).
+  const rev = revision ?? "main";
+  const r = await fetch(
+    `https://huggingface.co/api/models/${repo}/tree/${rev}?recursive=true`,
+    token ? { headers: { Authorization: `Bearer ${token}` } } : undefined,
+  );
+  if (!r.ok) throw new Error(`HuggingFace returned ${r.status}`);
+  const items = (await r.json()) as Array<{ type: string; path: string; size?: number }>;
+  return items
+    .filter((it) => it.type === "file" && it.path.toLowerCase().endsWith(".gguf"))
+    .map((it) => ({ path: it.path, size_mb: Math.round((it.size ?? 0) / 1024 / 1024) }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/** Stream-download a GGUF into the models directory (desktop app only). */
+export async function downloadModel(
+  repo: string,
+  filename: string,
+  handlers: DownloadHandlers,
+  revision?: string,
+  token?: string,
+): Promise<void> {
+  if (!isTauri()) {
+    handlers.onError("Model downloads are only available in the desktop app.");
+    return;
+  }
+  const { invoke, Channel } = await import("@tauri-apps/api/core");
+  const channel = new Channel<DownloadEvent>();
+  channel.onmessage = (evt) => {
+    if (evt.type === "progress") handlers.onProgress(evt.downloaded, evt.total, evt.fraction);
+    else if (evt.type === "done") handlers.onDone(evt.path);
+    else if (evt.type === "error") handlers.onError(evt.message);
+  };
+  await invoke("download_model", {
+    repo,
+    filename,
+    revision: revision ?? null,
+    token: token ?? null,
+    onProgress: channel,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// GitHub integration (OAuth device flow + repo indexing)
+// ---------------------------------------------------------------------------
+
+/** A repository the connected account can access (mirrors Rust `Repo`). */
+export interface Repo {
+  full_name: string;
+  private: boolean;
+  description: string | null;
+  default_branch: string | null;
+}
+
+export type GithubLoginEvent =
+  | { type: "code"; userCode: string; verificationUri: string; expiresIn: number }
+  | { type: "done" }
+  | { type: "error"; message: string };
+
+export interface GithubLoginHandlers {
+  onCode: (userCode: string, verificationUri: string, expiresIn: number) => void;
+  onDone: () => void;
+  onError: (message: string) => void;
+}
+
+export type IndexEvent =
+  | { type: "status"; message: string }
+  | { type: "progress"; done: number; total: number; fraction: number }
+  | { type: "done"; count: number }
+  | { type: "error"; message: string };
+
+export interface GithubIndexHandlers {
+  onStatus: (message: string) => void;
+  onProgress: (done: number, total: number, fraction: number) => void;
+  onDone: (count: number) => void;
+  onError: (message: string) => void;
+}
+
+/**
+ * Run the GitHub OAuth device flow. Emits `onCode` with the user code + URL to
+ * display, then `onDone` on success (token stored by the Rust core) or `onError`.
+ * Desktop app only — the device flow and token storage live in Rust.
+ */
+export async function githubLogin(handlers: GithubLoginHandlers): Promise<void> {
+  if (!isTauri()) {
+    handlers.onError("Connecting GitHub is only available in the desktop app.");
+    return;
+  }
+  const { invoke, Channel } = await import("@tauri-apps/api/core");
+  const channel = new Channel<GithubLoginEvent>();
+  channel.onmessage = (evt) => {
+    if (evt.type === "code") handlers.onCode(evt.userCode, evt.verificationUri, evt.expiresIn);
+    else if (evt.type === "done") handlers.onDone();
+    else if (evt.type === "error") handlers.onError(evt.message);
+  };
+  await invoke("github_login", { onEvent: channel });
+}
+
+/** List repositories the connected GitHub account can access. */
+export async function githubListRepos(): Promise<Repo[]> {
+  if (isTauri()) return ipc<Repo[]>("github_list_repos");
+  throw new Error("GitHub is only available in the desktop app.");
+}
+
+/** Clone + index a repository into the RAG store (desktop app only). */
+export async function githubIndexRepo(
+  fullName: string,
+  handlers: GithubIndexHandlers,
+): Promise<void> {
+  if (!isTauri()) {
+    handlers.onError("Indexing a repository is only available in the desktop app.");
+    return;
+  }
+  const { invoke, Channel } = await import("@tauri-apps/api/core");
+  const channel = new Channel<IndexEvent>();
+  channel.onmessage = (evt) => {
+    if (evt.type === "status") handlers.onStatus(evt.message);
+    else if (evt.type === "progress") handlers.onProgress(evt.done, evt.total, evt.fraction);
+    else if (evt.type === "done") handlers.onDone(evt.count);
+    else if (evt.type === "error") handlers.onError(evt.message);
+  };
+  await invoke("github_index_repo", { fullName, onEvent: channel });
+}
+
+/** Placeholder the Rust core sends in place of a stored secret; sending it back
+ *  verbatim means "keep the existing value". Mirrors config.rs SECRET_SENTINEL. */
+export const SECRET_SENTINEL = "__libbie_saved__";
 
 export { DEV_BASE_URL };

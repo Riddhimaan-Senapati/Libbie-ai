@@ -1,0 +1,34 @@
+# Libbie engine configuration (plan section 7 -- "Model layer: two backends, one interface").
+#
+# Every LLM call in the engine goes through one interface; no call site knows
+# which backend served it. Flip `backend` to move the whole pipeline between a
+# lab's self-hosted GPU node and the Anthropic API.
+
+llm:
+  backend: mock            # local | api | mock   (mock = offline, deterministic, no network)
+
+  local:                   # self-hosted / open-weights (default for lab deployments)
+    endpoint: http://gpu-node:8000/v1   # vLLM / llama.cpp OpenAI-compatible server
+    api_key: null                       # usually unused for local servers
+    extract: qwen3-32b-awq
+    adjudicate: llama-3.3-70b-awq
+    synthesize: qwen3-32b-awq
+    embed: bge-m3
+
+  api:                     # cloud / demo (better quality on the join layer)
+    provider: anthropic
+    # api_key falls back to $ANTHROPIC_API_KEY if omitted
+    extract: claude-haiku-4-5           # cheap, high volume
+    adjudicate: claude-opus-4-8         # precision-critical, low volume
+    synthesize: claude-sonnet-5
+    embed: voyage-3                      # via embed_endpoint below
+    embed_endpoint: https://api.voyageai.com/v1
+
+# The join layer's commit rule. Edges scored below `commit_threshold` are kept as
+# `hypothesis` edges and surfaced in the briefing's honest-gaps section.
+join:
+  commit_threshold: 0.75
+  time_locality_days: 14   # Decision <-> JobRun +/- N days for candidate generation
+
+store:
+  root: ./libbie_store     # raw artifact blobs + graph.json land here

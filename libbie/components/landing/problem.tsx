@@ -11,7 +11,7 @@ const TRAITS: { icon: React.ReactNode; title: string; body: string }[] = [
     icon: <MessagesSquare className="size-5" aria-hidden />,
     title: "Proactive, not a search box",
     body:
-      "She flags the load-bearing, stale decisions before you ask — with the thread that explains each one already attached.",
+      "She flags the load-bearing decisions that have gone stale before you ask, with the thread that explains each one already attached.",
   },
   {
     icon: <FileCode2 className="size-5" aria-hidden />,
@@ -23,7 +23,7 @@ const TRAITS: { icon: React.ReactNode; title: string; body: string }[] = [
     icon: <Users className="size-5" aria-hidden />,
     title: "Speaks to both audiences",
     body:
-      "The same reconstructed reasoning, rendered for an engineer or for a VP — instantly, with no re-explaining.",
+      "The same reconstructed reasoning, written for an engineer or for a VP, without making you re-explain it.",
   },
   {
     icon: <Clock className="size-5" aria-hidden />,
@@ -44,7 +44,7 @@ export function MeetLibbie() {
               <SectionHeading
                 eyebrow="Meet Libbie"
                 title="A chief of staff who has read everything."
-                description="Warm, concise, quietly authoritative — Libbie is the colleague who never makes you feel behind. She leads with the answer, names the humans involved, and shows her receipts."
+                description="Libbie is the colleague who never makes you feel behind. She leads with the answer, names the people who made the call, and shows where it came from."
               />
 
               {/* Libbie's own voice */}

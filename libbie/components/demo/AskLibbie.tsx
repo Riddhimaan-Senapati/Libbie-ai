@@ -200,7 +200,7 @@ export function AskLibbie({
                   <div className="flex items-start gap-2.5">
                     <LibbieAvatar size={26} className="mt-0.5" />
                     <p className="text-[13px] leading-relaxed text-muted-foreground">
-                      I don&apos;t have that one rehearsed yet — but here&apos;s what I can
+                      I don&apos;t have that one rehearsed yet, but here&apos;s what I can
                       answer about this pipeline with full receipts:
                     </p>
                   </div>

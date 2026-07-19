@@ -77,7 +77,7 @@ export function QueryConsole({ answers, selectedId, onSelect }: QueryConsoleProp
           >
             <Info className="mt-0.5 size-4 shrink-0 text-warn" aria-hidden />
             <span>
-              I can answer these for the loaded pipeline — pick one to see the
+              I can answer these for the loaded pipeline. Pick one to see the
               reconstructed intent with its code and conversation sources.
             </span>
           </motion.div>

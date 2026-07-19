@@ -119,7 +119,7 @@ function LocalState() {
       </div>
       <p className="relative inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/5 px-3 py-1 text-[11px] font-medium text-primary">
         <WifiOff className="size-3" aria-hidden />
-        No network needed — nothing leaves your environment
+        Runs offline. Nothing leaves your environment
       </p>
     </motion.div>
   );
@@ -151,7 +151,7 @@ function EmptyState() {
           Ask why it was built this way
         </h2>
         <p className="text-sm leading-relaxed text-muted-foreground">
-          Pick a question to reconstruct the intent behind a pipeline parameter —
+          Pick a question to reconstruct the intent behind a pipeline parameter,
           grounded side by side in the exact code and the conversation that
           justified it.
         </p>

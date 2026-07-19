@@ -6,13 +6,13 @@ import { pipeline, answers, staleness } from "@/lib/data";
 /** Compose a handover / onboarding document from the indexed corpus (FR-12). */
 function buildMarkdown(): string {
   const lines: string[] = [];
-  lines.push(`# Handover — ${pipeline.name}`);
+  lines.push(`# Handover: ${pipeline.name}`);
   lines.push("");
   lines.push(`> ${pipeline.family}`);
   lines.push("");
   lines.push(`**Repository:** \`${pipeline.repo}\``);
   lines.push(
-    `**Original author:** ${pipeline.author.name} (${pipeline.author.role}) — departed ${pipeline.author.departed}`,
+    `**Original author:** ${pipeline.author.name} (${pipeline.author.role}), departed ${pipeline.author.departed}`,
   );
   lines.push(
     `**Corpus:** ${pipeline.stats.files} files · ${pipeline.stats.conversations} conversations · ${pipeline.stats.commits} commits`,

@@ -1,0 +1,14 @@
+{
+  "_comment": "Hand-labelled edges for the hero scenario (germline variant calling). label=true means the edge SHOULD be committed; label=false is a plausible-but-wrong link that must NOT be committed (measures precision). Nodes are matched by descriptor, not id, so this survives re-ingestion. Scale this to ~200 across a real pipeline per plan section 2.",
+  "edges": [
+    {"type": "justified_by", "src": {"kind": "param", "key": "reference"}, "dst": {"kind": "decision", "contains": "GRCh37"}, "label": true, "note": "reference build GRCh37 justified by Elena's thread"},
+    {"type": "justified_by", "src": {"kind": "param", "key": "min-base-quality-score"}, "dst": {"kind": "decision", "contains": "base quality"}, "label": true, "note": "min-base-quality-score=20 justified by the thread"},
+    {"type": "justified_by", "src": {"kind": "param", "key": "standard-min-confidence-threshold-for-calling"}, "dst": {"kind": "decision", "contains": "base quality"}, "label": false, "note": "value 30 appears in the thread but refers to the OLD base-quality value, not this calling-confidence param"},
+    {"type": "sourced_from", "src": {"kind": "decision", "contains": "GRCh37"}, "dst": {"kind": "message", "contains": "GRCh37"}, "label": true},
+    {"type": "used", "src": {"kind": "job_run", "job_id": "48219"}, "dst": {"kind": "param", "key": "reference"}, "label": true},
+    {"type": "wrote", "src": {"kind": "job_run", "job_id": "48219"}, "dst": {"kind": "file", "contains": "sample01.vcf"}, "label": true},
+    {"type": "appears_in", "src": {"kind": "file", "contains": "sample01.vcf"}, "dst": {"kind": "claim", "contains": "sample01"}, "label": true, "note": "paper cites the output as 'sample01' (Figure 2), without the .vcf extension"},
+    {"type": "contains", "src": {"kind": "paper", "contains": "Germline"}, "dst": {"kind": "claim", "contains": "12,048"}, "label": true},
+    {"type": "supported_by", "src": {"kind": "finding", "contains": "variants"}, "dst": {"kind": "job_run", "job_id": "48219"}, "label": true}
+  ]
+}

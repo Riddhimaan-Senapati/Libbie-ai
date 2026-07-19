@@ -1,0 +1,22 @@
+{
+  "U01PRIYA": {
+    "id": "U01PRIYA",
+    "real_name": "Priya Nair",
+    "profile": { "email": "pnair@genomicslab.org", "display_name": "priya" }
+  },
+  "U02DANIEL": {
+    "id": "U02DANIEL",
+    "real_name": "Daniel Okafor",
+    "profile": { "email": "dokafor@genomicslab.org", "display_name": "daniel" }
+  },
+  "U03SOFIA": {
+    "id": "U03SOFIA",
+    "real_name": "Sofia Ramirez",
+    "profile": { "email": "sramirez@genomicslab.org", "display_name": "sofia" }
+  },
+  "U04WEI": {
+    "id": "U04WEI",
+    "real_name": "Wei Zhang",
+    "profile": { "email": "wzhang@genomicslab.org", "display_name": "wei" }
+  }
+}

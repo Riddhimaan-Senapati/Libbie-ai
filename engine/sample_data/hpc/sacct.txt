@@ -1,0 +1,4 @@
+JobID|JobName|Partition|Submit|Start|End|State|ExitCode|NodeList|WorkDir
+48219|germline-call|gpu|2023-02-14T09:12:03|2023-02-14T09:15:40|2023-02-14T18:44:21|COMPLETED|0:0|gpu-node-07|/home/evasquez/pipelines/germline
+48219.batch|batch|gpu|2023-02-14T09:15:40|2023-02-14T09:15:40|2023-02-14T18:44:21|COMPLETED|0:0|gpu-node-07|
+48219.0|gatk|gpu|2023-02-14T09:15:41|2023-02-14T09:15:41|2023-02-14T18:44:20|COMPLETED|0:0|gpu-node-07|

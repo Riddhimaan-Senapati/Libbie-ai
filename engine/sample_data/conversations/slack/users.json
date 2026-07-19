@@ -1,0 +1,12 @@
+{
+  "U023ELENA": {
+    "id": "U023ELENA",
+    "real_name": "Elena Vasquez",
+    "profile": { "email": "evasquez@lab.edu", "display_name": "elena" }
+  },
+  "U08MARCUS": {
+    "id": "U08MARCUS",
+    "real_name": "Marcus Chen",
+    "profile": { "email": "mchen@lab.edu", "display_name": "marcus" }
+  }
+}

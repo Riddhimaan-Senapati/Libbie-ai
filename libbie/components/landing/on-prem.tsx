@@ -7,7 +7,7 @@ import { localAnswer } from "@/lib/data";
 import { Reveal, SectionHeading } from "@/components/landing/reveal";
 
 const GUARANTEES: string[] = [
-  "Fully local inference — Libbie answers on-device",
+  "Fully local inference, so Libbie answers on-device",
   "Air-gapped deployment for regulated pharma & biotech",
   "Your code and conversations never leave your environment",
   "Full, traceable provenance for every decision she recovers",
@@ -27,7 +27,7 @@ export function AirGapped() {
             <SectionHeading
               eyebrow="Air-gapped"
               title="She works where data can't leave the building."
-              description="For regulated pharma and biotech R&D, Libbie runs entirely inside your perimeter. She comes to your data — your code and conversations never come to us."
+              description="For regulated pharma and biotech R&D, Libbie runs entirely inside your perimeter. She comes to your data; your code and conversations never come to us."
             />
             <ul className="mt-8 space-y-3">
               {GUARANTEES.map((g) => (
@@ -62,8 +62,8 @@ export function AirGapped() {
             <h3 className="text-xl font-semibold tracking-tight text-foreground">Runs in your secure enclave</h3>
             <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
               {LOCAL
-                ? `Sensitive questions like “${LOCAL.chip}” are answered by Libbie's local model path — entirely on-prem, with the same dual-cited provenance.`
-                : "Sensitive questions are answered by Libbie's local model path — entirely on-prem, with the same dual-cited provenance."}
+                ? `Sensitive questions like “${LOCAL.chip}” are answered by Libbie's local model path, entirely on-prem, with the same dual-cited provenance.`
+                : "Sensitive questions are answered by Libbie's local model path, entirely on-prem, with the same dual-cited provenance."}
             </p>
 
             <div className="mt-6 grid grid-cols-3 gap-3 border-t border-border pt-6">

@@ -1,0 +1,8 @@
+Currently Loaded Modules:
+  1) ensembl-vep/105
+
+Running: vep --input /data/results/cohortA_sample01.vcf --cache-version 105 --fork 4 --output /data/annot/cohortA_annotated.vcf
+[VEP] Ensembl VEP cache version 105
+[VEP] forking across 4 workers
+[VEP] wrote /data/annot/cohortA_annotated.vcf (3142880 variants annotated)
+Done. exit 0

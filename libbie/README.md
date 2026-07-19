@@ -2,7 +2,7 @@
 
 The institutional-memory layer for compute-heavy R&D. Libbie.ai reconstructs the
 *intent* behind inherited pipelines by fusing **code + conversations + domain knowledge**,
-answering "why was this built this way?" with citations to BOTH the code and the
+and answers "why was this built this way?" with citations to BOTH the code and the
 conversation that justified it.
 
 This is the **demo MVP** (Phase 0). Per `../docs/mvp_plan.md` the rule is: *fake the
@@ -34,7 +34,9 @@ npm run build    # production build
 - `components/landing/*` — landing sections. `components/demo/*` — the demo app.
 - `CONTRACT.md` — the build contract (design system + data API) used to build the UI.
 
-All sample data is labelled in the UI (NFR-6). The "local / air-gapped" path is a faked
-UI toggle in this web MVP; it is realized for real in the **`../desktop/`** app — a Tauri
-client running fully local inference via llama.cpp (vLLM on Linux+NVIDIA), with zero runtime
-network egress. See `../desktop/README.md`.
+All sample data is labelled in the UI (NFR-6). The "local / air-gapped" path is a faked UI
+toggle in this web MVP. It's real in the **`../desktop/`** app: a Tauri client that runs local
+inference via llama.cpp (vLLM on Linux+NVIDIA) with zero network egress, and also lets you use
+any cloud provider, download models from Hugging Face, track token cost, and index your own
+GitHub repositories. See `../desktop/README.md`. The full ingestion engine lives in
+`../engine/` (see `../engine/README.md`).

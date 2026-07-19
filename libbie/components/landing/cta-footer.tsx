@@ -45,7 +45,7 @@ export function CtaFooter() {
             Libbie remembers why. So you don&apos;t have to.
           </h2>
           <p className="mx-auto mt-5 max-w-xl text-pretty text-base leading-relaxed text-muted-foreground">
-            Watch her reconstruct the intent behind a real germline variant-calling pipeline —
+            Watch her reconstruct the intent behind a real germline variant-calling pipeline,
             cited to the code and the conversation behind it.
           </p>
           <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
@@ -81,7 +81,7 @@ export function CtaFooter() {
               <div className="mt-5 inline-flex items-start gap-2 rounded-lg border border-conversation/40 bg-conversation-soft px-3 py-2 text-xs text-conversation">
                 <FlaskConical className="mt-0.5 size-3.5 shrink-0" aria-hidden />
                 <span>
-                  Demo uses authored sample data — the {pipeline.repo} pipeline and its conversations
+                  Demo uses authored sample data. The {pipeline.repo} pipeline and its conversations
                   are illustrative.
                 </span>
               </div>
