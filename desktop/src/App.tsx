@@ -1,6 +1,14 @@
 import * as React from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Command, Settings as SettingsIcon, ShieldCheck, PanelLeftOpen, Lock, Coins } from "lucide-react";
+import {
+  Command,
+  Settings as SettingsIcon,
+  ShieldCheck,
+  PanelLeftOpen,
+  Lock,
+  Coins,
+  Waypoints,
+} from "lucide-react";
 
 import { pipeline, getCodeFile, answers, proactiveNudge, libbie } from "@/lib/data";
 import type { CodeFile, CodeRef } from "@/lib/types";
@@ -45,12 +53,13 @@ import { Sheet } from "@/components/Overlay";
 import { RiskPanel } from "@/components/RiskPanel";
 import { HandoverDoc } from "@/components/HandoverDoc";
 import { TokenPanel, type CallRecord } from "@/components/TokenPanel";
+import { GraphView } from "@/components/GraphView";
 import { costUsd } from "@/lib/pricing";
 import { cn } from "@/lib/utils";
 
 const DEFAULT_FILE = "conf/params.config";
 
-type Screen = "reading" | "workspace" | "settings";
+type Screen = "reading" | "workspace" | "settings" | "graph";
 
 export default function App() {
   const [screen, setScreen] = React.useState<Screen>("reading");
@@ -430,6 +439,7 @@ export default function App() {
           onStart={handleStart}
           onStop={handleStop}
           onAsk={() => setAskOpen(true)}
+          onGraph={() => setScreen("graph")}
           onSettings={() => setScreen(screen === "settings" ? "workspace" : "settings")}
           settingsActive
         />
@@ -459,6 +469,28 @@ export default function App() {
     );
   }
 
+  if (screen === "graph") {
+    return (
+      <div className="flex h-screen flex-col overflow-hidden">
+        <TopBar
+          offline={!!config?.offline_mode}
+          status={status}
+          engineBusy={engineBusy}
+          onStart={handleStart}
+          onStop={handleStop}
+          onAsk={() => setAskOpen(true)}
+          onTokens={() => setTokensOpen(true)}
+          onGraph={() => setScreen("workspace")}
+          onSettings={() => setScreen("settings")}
+          graphActive
+        />
+        <main className="min-h-0 flex-1">
+          <GraphView />
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       <TopBar
@@ -469,6 +501,7 @@ export default function App() {
         onStop={handleStop}
         onAsk={() => setAskOpen(true)}
         onTokens={() => setTokensOpen(true)}
+        onGraph={() => setScreen("graph")}
         onSettings={() => setScreen("settings")}
       />
 
@@ -581,8 +614,10 @@ function TopBar({
   onStop,
   onAsk,
   onTokens,
+  onGraph,
   onSettings,
   settingsActive,
+  graphActive,
 }: {
   offline: boolean;
   status: EngineStatus;
@@ -591,8 +626,10 @@ function TopBar({
   onStop: () => void;
   onAsk: () => void;
   onTokens?: () => void;
+  onGraph?: () => void;
   onSettings: () => void;
   settingsActive?: boolean;
+  graphActive?: boolean;
 }) {
   return (
     <header
@@ -630,6 +667,24 @@ function TopBar({
             ⌘K
           </kbd>
         </button>
+
+        {onGraph && (
+          <button
+            type="button"
+            onClick={onGraph}
+            aria-label="Provenance graph"
+            title="Provenance graph"
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[12px] transition-colors",
+              graphActive
+                ? "border-primary/30 bg-primary/10 text-primary"
+                : "border-border text-muted-foreground hover:bg-muted hover:text-foreground",
+            )}
+          >
+            <Waypoints className="size-3.5" aria-hidden />
+            <span className="hidden sm:inline">Graph</span>
+          </button>
+        )}
 
         {onTokens && (
           <button

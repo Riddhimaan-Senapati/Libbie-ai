@@ -7,10 +7,13 @@
 
 mod commands;
 mod config;
+mod email;
 mod engine;
 mod error;
 mod github;
 mod inference;
+mod oauth;
+mod slack;
 mod vecstore;
 
 use commands::AppState;
@@ -30,6 +33,7 @@ pub fn run() {
             commands::start_engine,
             commands::stop_engine,
             commands::list_models,
+            commands::open_graph_json,
             commands::ask_libbie,
             commands::embed_texts,
             commands::start_embed_engine,
@@ -43,6 +47,14 @@ pub fn run() {
             commands::github_login,
             commands::github_list_repos,
             commands::github_index_repo,
+            commands::slack_connect,
+            commands::slack_list_channels,
+            commands::slack_index_channels,
+            commands::email_gmail_connect,
+            commands::email_list_labels,
+            commands::email_imap_connect,
+            commands::email_list_mailboxes,
+            commands::email_index,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Libbie desktop")
