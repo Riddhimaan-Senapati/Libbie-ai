@@ -58,7 +58,7 @@ export function Hero() {
             className="mx-auto mt-7 max-w-2xl text-pretty text-base leading-relaxed text-muted-foreground sm:text-lg"
           >
             Meet Libbie, the colleague who remembers why every pipeline was built this way.
-            She's read every line of code and every conversation, and answers with receipts.
+            She&apos;s read every line of code and every conversation, and answers with receipts.
           </motion.p>
 
           <motion.div variants={item} className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">

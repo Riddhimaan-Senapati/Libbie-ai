@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 
 use crate::config::{self, AppConfig};
 use crate::engine::{self, EngineChoice, EngineManager, EngineStatus, HardwareInfo};
+use crate::error::AppError;
 use crate::github::{self, Repo};
 use crate::inference::{self, ChatMessage, ChatOptions, StreamEvent};
 use crate::vecstore::{Hit, VecStore};
@@ -19,17 +20,42 @@ use crate::vecstore::{Hit, VecStore};
 pub struct AppState {
     pub engine: Arc<EngineManager>,
     pub config: Mutex<AppConfig>,
-    pub vec: VecStore,
+    /// The on-disk vector index. `None` when it could not be opened (corrupt/
+    /// locked file, unwritable data dir) — the app still launches and retrieval
+    /// degrades to lexical-only rather than crashing on startup.
+    pub vec: Option<VecStore>,
 }
 
 impl AppState {
     pub fn new() -> Self {
+        let vec = match VecStore::open(config::index_db_path()) {
+            Ok(store) => Some(store),
+            Err(e) => {
+                // Non-fatal: log and continue. `vector_search`/`build_index` will
+                // report VectorStoreUnavailable so the frontend falls back to
+                // lexical retrieval (see rag.ts `retrieveVector`).
+                eprintln!(
+                    "libbie: vector index unavailable, falling back to lexical retrieval only: {}",
+                    e
+                );
+                None
+            }
+        };
         AppState {
             engine: EngineManager::new(),
             config: Mutex::new(config::load()),
-            vec: VecStore::open(config::index_db_path())
-                .expect("failed to open vector index database"),
+            vec,
         }
+    }
+
+    /// Borrow the vector store, or a typed "unavailable" error the frontend can
+    /// recognise and recover from (lexical fallback).
+    fn vec(&self) -> Result<&VecStore, AppError> {
+        self.vec.as_ref().ok_or_else(|| {
+            AppError::vector_store_unavailable(
+                "The vector index is unavailable on this host; using lexical retrieval instead.",
+            )
+        })
     }
 }
 
@@ -42,7 +68,7 @@ pub struct ModelEntry {
 }
 
 #[tauri::command]
-pub async fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
+pub async fn get_config(state: State<'_, AppState>) -> Result<AppConfig, AppError> {
     // Never hand secrets (API keys, github token) to the untrusted webview.
     Ok(state.config.lock().await.redacted())
 }
@@ -51,7 +77,7 @@ pub async fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String>
 pub async fn set_config(
     state: State<'_, AppState>,
     mut config: AppConfig,
-) -> Result<AppConfig, String> {
+) -> Result<AppConfig, AppError> {
     // The webview only ever sees masked secrets, so merge the stored real values
     // back in (SECRET_SENTINEL = unchanged), then validate the air-gap invariants
     // (loopback host, recognised engine binary) before persisting.
@@ -59,8 +85,8 @@ pub async fn set_config(
         let current = state.config.lock().await;
         config.merge_secrets_from(&current);
     }
-    config.validate()?;
-    config::save(&config).map_err(|e| format!("Could not save config: {e}"))?;
+    config.validate().map_err(AppError::invalid_input)?;
+    config::save(&config).map_err(|e| AppError::config(format!("Could not save config: {e}")))?;
     *state.config.lock().await = config.clone();
     Ok(config.redacted())
 }
@@ -71,31 +97,31 @@ pub fn get_hardware() -> HardwareInfo {
 }
 
 #[tauri::command]
-pub async fn get_engine_choice(state: State<'_, AppState>) -> Result<EngineChoice, String> {
+pub async fn get_engine_choice(state: State<'_, AppState>) -> Result<EngineChoice, AppError> {
     let cfg = state.config.lock().await.clone();
     Ok(engine::choose_engine(&engine::detect_hardware(), &cfg))
 }
 
 #[tauri::command]
-pub async fn engine_status(state: State<'_, AppState>) -> Result<EngineStatus, String> {
+pub async fn engine_status(state: State<'_, AppState>) -> Result<EngineStatus, AppError> {
     Ok(state.engine.status().await)
 }
 
 #[tauri::command]
-pub async fn start_engine(state: State<'_, AppState>) -> Result<EngineStatus, String> {
+pub async fn start_engine(state: State<'_, AppState>) -> Result<EngineStatus, AppError> {
     let cfg = state.config.lock().await.clone();
     state.engine.start(&cfg).await
 }
 
 #[tauri::command]
-pub async fn stop_engine(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn stop_engine(state: State<'_, AppState>) -> Result<(), AppError> {
     state.engine.stop().await;
     Ok(())
 }
 
 /// List GGUF models in the configured cache directory.
 #[tauri::command]
-pub async fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelEntry>, String> {
+pub async fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelEntry>, AppError> {
     let cfg = state.config.lock().await.clone();
     let dir = std::path::PathBuf::from(&cfg.models_dir);
     let mut out = Vec::new();
@@ -136,7 +162,7 @@ pub async fn ask_libbie(
     messages: Vec<ChatMessage>,
     options: Option<ChatOptions>,
     on_event: Channel<StreamEvent>,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let target = {
         let cfg = state.config.lock().await;
         cfg.chat_target()
@@ -145,7 +171,9 @@ pub async fn ask_libbie(
     let opts = options.unwrap_or_default();
 
     if let Err(e) = inference::stream_chat(&client, &target, messages, opts, &on_event).await {
-        let _ = on_event.send(StreamEvent::Error { message: e.clone() });
+        let _ = on_event.send(StreamEvent::Error {
+            message: e.message().to_string(),
+        });
         return Err(e);
     }
     Ok(())
@@ -157,7 +185,7 @@ pub async fn ask_libbie(
 pub async fn embed_texts(
     state: State<'_, AppState>,
     inputs: Vec<String>,
-) -> Result<Vec<Vec<f32>>, String> {
+) -> Result<Vec<Vec<f32>>, AppError> {
     let target = {
         let cfg = state.config.lock().await;
         cfg.embed_target()
@@ -169,19 +197,19 @@ pub async fn embed_texts(
 // ---- embedding engine lifecycle ------------------------------------------
 
 #[tauri::command]
-pub async fn start_embed_engine(state: State<'_, AppState>) -> Result<EngineStatus, String> {
+pub async fn start_embed_engine(state: State<'_, AppState>) -> Result<EngineStatus, AppError> {
     let cfg = state.config.lock().await.clone();
     state.engine.start_embed(&cfg).await
 }
 
 #[tauri::command]
-pub async fn stop_embed_engine(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn stop_embed_engine(state: State<'_, AppState>) -> Result<(), AppError> {
     state.engine.stop_embed().await;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn embed_engine_status(state: State<'_, AppState>) -> Result<EngineStatus, String> {
+pub async fn embed_engine_status(state: State<'_, AppState>) -> Result<EngineStatus, AppError> {
     Ok(state.engine.embed_status().await)
 }
 
@@ -206,12 +234,21 @@ pub struct IndexStatus {
 }
 
 #[tauri::command]
-pub async fn index_status(state: State<'_, AppState>) -> Result<IndexStatus, String> {
-    let count = state.vec.count();
+pub async fn index_status(state: State<'_, AppState>) -> Result<IndexStatus, AppError> {
+    // A missing store is reported as "not indexed" rather than an error, so the
+    // UI can show a clean degraded state instead of a failure.
+    let Some(vec) = state.vec.as_ref() else {
+        return Ok(IndexStatus {
+            indexed: false,
+            count: 0,
+            dim: None,
+        });
+    };
+    let count = vec.count();
     Ok(IndexStatus {
         indexed: count > 0,
         count,
-        dim: state.vec.dim(),
+        dim: vec.dim(),
     })
 }
 
@@ -224,9 +261,10 @@ async fn embed_and_index<F: FnMut(usize, usize)>(
     state: &AppState,
     chunks: &[Chunk],
     mut on_progress: F,
-) -> Result<IndexStatus, String> {
+) -> Result<IndexStatus, AppError> {
+    let vec = state.vec()?;
     if chunks.is_empty() {
-        return Err("No chunks to index.".to_string());
+        return Err(AppError::invalid_input("No chunks to index."));
     }
     let target = {
         let cfg = state.config.lock().await;
@@ -243,7 +281,9 @@ async fn embed_and_index<F: FnMut(usize, usize)>(
             .collect();
         let vecs = inference::embed(&client, &target, inputs).await?;
         if vecs.len() != batch.len() {
-            return Err("Embedding engine returned the wrong number of vectors.".to_string());
+            return Err(AppError::embedding(
+                "Embedding engine returned the wrong number of vectors.",
+            ));
         }
         embeddings.extend(vecs);
         on_progress(embeddings.len(), chunks.len());
@@ -253,11 +293,11 @@ async fn embed_and_index<F: FnMut(usize, usize)>(
         .first()
         .map(|v| v.len())
         .filter(|d| *d > 0)
-        .ok_or_else(|| "Embedding engine returned empty vectors.".to_string())?;
+        .ok_or_else(|| AppError::embedding("Embedding engine returned empty vectors."))?;
 
-    state.vec.reset(dim)?;
+    vec.reset(dim)?;
     for (i, (c, emb)) in chunks.iter().zip(embeddings.iter()).enumerate() {
-        state.vec.insert(
+        vec.insert(
             i as i64 + 1,
             emb,
             c.path.as_deref().unwrap_or(""),
@@ -280,7 +320,7 @@ async fn embed_and_index<F: FnMut(usize, usize)>(
 pub async fn build_index(
     state: State<'_, AppState>,
     chunks: Vec<Chunk>,
-) -> Result<IndexStatus, String> {
+) -> Result<IndexStatus, AppError> {
     embed_and_index(state.inner(), &chunks, |_, _| {}).await
 }
 
@@ -292,7 +332,8 @@ pub async fn vector_search(
     query: String,
     k: usize,
     kind: Option<String>,
-) -> Result<Vec<Hit>, String> {
+) -> Result<Vec<Hit>, AppError> {
+    let store = state.vec()?;
     let target = {
         let cfg = state.config.lock().await;
         cfg.embed_target()
@@ -303,8 +344,8 @@ pub async fn vector_search(
     let emb = vecs
         .into_iter()
         .next()
-        .ok_or_else(|| "No query embedding returned.".to_string())?;
-    state.vec.knn(&emb, k, kind.as_deref())
+        .ok_or_else(|| AppError::embedding("No query embedding returned."))?;
+    store.knn(&emb, k, kind.as_deref())
 }
 
 // ---- HuggingFace model download -------------------------------------------
@@ -333,7 +374,7 @@ pub async fn list_hf_gguf(
     repo: String,
     revision: Option<String>,
     token: Option<String>,
-) -> Result<Vec<HfFile>, String> {
+) -> Result<Vec<HfFile>, AppError> {
     let rev = revision.unwrap_or_else(|| "main".to_string());
     let url = format!(
         "https://huggingface.co/api/models/{repo}/tree/{rev}?recursive=true"
@@ -345,14 +386,17 @@ pub async fn list_hf_gguf(
     let resp = req
         .send()
         .await
-        .map_err(|e| format!("Could not reach HuggingFace: {e}"))?;
+        .map_err(|e| AppError::engine_unreachable(format!("Could not reach HuggingFace: {e}")))?;
     if !resp.status().is_success() {
-        return Err(format!("HuggingFace returned {} for {repo}", resp.status()));
+        return Err(AppError::engine_error(format!(
+            "HuggingFace returned {} for {repo}",
+            resp.status()
+        )));
     }
     let items: Vec<serde_json::Value> = resp
         .json()
         .await
-        .map_err(|e| format!("Bad HuggingFace response: {e}"))?;
+        .map_err(|e| AppError::engine_error(format!("Bad HuggingFace response: {e}")))?;
     let mut out: Vec<HfFile> = items
         .into_iter()
         .filter(|it| it.get("type").and_then(|t| t.as_str()) == Some("file"))
@@ -379,29 +423,30 @@ pub async fn download_model(
     revision: Option<String>,
     token: Option<String>,
     on_progress: Channel<DownloadEvent>,
-) -> Result<String, String> {
+) -> Result<String, AppError> {
     let (models_dir, offline) = {
         let cfg = state.config.lock().await;
         (cfg.models_dir.clone(), cfg.offline_mode)
     };
     if offline {
-        return Err("Strict air-gapped mode is on — downloads are disabled. Turn off \
-                    air-gap to download, or stage the .gguf into the models folder manually."
-            .to_string());
+        return Err(AppError::airgap_blocked(
+            "Strict air-gapped mode is on — downloads are disabled. Turn off \
+             air-gap to download, or stage the .gguf into the models folder manually.",
+        ));
     }
 
     // Destination is a plain basename in the models dir (no path traversal).
     let base = Path::new(&filename)
         .file_name()
         .and_then(|n| n.to_str())
-        .ok_or_else(|| "Invalid filename.".to_string())?;
+        .ok_or_else(|| AppError::invalid_input("Invalid filename."))?;
     if !base.to_ascii_lowercase().ends_with(".gguf") {
-        return Err("Only .gguf files can be downloaded.".to_string());
+        return Err(AppError::invalid_input("Only .gguf files can be downloaded."));
     }
     let dir = PathBuf::from(&models_dir);
     tokio::fs::create_dir_all(&dir)
         .await
-        .map_err(|e| format!("Could not create models dir: {e}"))?;
+        .map_err(|e| AppError::config(format!("Could not create models dir: {e}")))?;
     let dest = dir.join(base);
 
     let rev = revision.unwrap_or_else(|| "main".to_string());
@@ -421,7 +466,9 @@ pub async fn download_model(
         }
         Err(e) => {
             let _ = tokio::fs::remove_file(&dest).await; // don't leave a partial file
-            let _ = on_progress.send(DownloadEvent::Error { message: e.clone() });
+            let _ = on_progress.send(DownloadEvent::Error {
+                message: e.message().to_string(),
+            });
             Err(e)
         }
     }
@@ -431,30 +478,35 @@ async fn stream_to_file(
     req: reqwest::RequestBuilder,
     dest: &Path,
     on_progress: &Channel<DownloadEvent>,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let resp = req
         .send()
         .await
-        .map_err(|e| format!("Could not reach HuggingFace: {e}"))?;
+        .map_err(|e| AppError::engine_unreachable(format!("Could not reach HuggingFace: {e}")))?;
     if !resp.status().is_success() {
-        return Err(format!("HuggingFace returned {}", resp.status()));
+        return Err(AppError::engine_error(format!(
+            "HuggingFace returned {}",
+            resp.status()
+        )));
     }
     let total = resp.content_length().unwrap_or(0);
     let mut file = tokio::fs::File::create(dest)
         .await
-        .map_err(|e| format!("Could not create file: {e}"))?;
+        .map_err(|e| AppError::config(format!("Could not create file: {e}")))?;
     let mut downloaded: u64 = 0;
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let bytes = chunk.map_err(|e| format!("Download error: {e}"))?;
+        let bytes = chunk.map_err(|e| AppError::engine_error(format!("Download error: {e}")))?;
         file.write_all(&bytes)
             .await
-            .map_err(|e| format!("Write error: {e}"))?;
+            .map_err(|e| AppError::config(format!("Write error: {e}")))?;
         downloaded += bytes.len() as u64;
         let fraction = if total > 0 { downloaded as f64 / total as f64 } else { 0.0 };
         let _ = on_progress.send(DownloadEvent::Progress { downloaded, total, fraction });
     }
-    file.flush().await.map_err(|e| format!("Flush error: {e}"))?;
+    file.flush()
+        .await
+        .map_err(|e| AppError::config(format!("Flush error: {e}")))?;
     Ok(())
 }
 
@@ -626,10 +678,12 @@ fn resolve_client_id(cfg: &AppConfig) -> Option<String> {
 pub async fn github_login(
     state: State<'_, AppState>,
     on_event: Channel<GithubLoginEvent>,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let result = github_login_inner(&state, &on_event).await;
     if let Err(ref e) = result {
-        let _ = on_event.send(GithubLoginEvent::Error { message: e.clone() });
+        let _ = on_event.send(GithubLoginEvent::Error {
+            message: e.message().to_string(),
+        });
     }
     result
 }
@@ -637,36 +691,43 @@ pub async fn github_login(
 async fn github_login_inner(
     state: &AppState,
     on_event: &Channel<GithubLoginEvent>,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let (offline, client_id) = {
         let cfg = state.config.lock().await;
         (cfg.offline_mode, resolve_client_id(&cfg))
     };
     if offline {
-        return Err("Strict air-gapped mode is on — GitHub access is disabled. \
-                    Turn off air-gap to connect your account."
-            .to_string());
+        return Err(AppError::airgap_blocked(
+            "Strict air-gapped mode is on — GitHub access is disabled. \
+             Turn off air-gap to connect your account.",
+        ));
     }
     let client_id = client_id.ok_or_else(|| {
-        "No GitHub client id configured. Set it in Settings (or the \
-         LIBBIE_GITHUB_CLIENT_ID environment variable)."
-            .to_string()
+        AppError::config(
+            "No GitHub client id configured. Set it in Settings (or the \
+             LIBBIE_GITHUB_CLIENT_ID environment variable).",
+        )
     })?;
 
     let client = state.engine.client();
-    let dc = github::request_device_code(&client, &client_id).await?;
+    let dc = github::request_device_code(&client, &client_id)
+        .await
+        .map_err(AppError::github)?;
     let _ = on_event.send(GithubLoginEvent::Code {
         user_code: dc.user_code.clone(),
         verification_uri: dc.verification_uri.clone(),
         expires_in: dc.expires_in,
     });
 
-    let token = github::poll_for_token(&client, &client_id, &dc.device_code, dc.interval).await?;
+    let token = github::poll_for_token(&client, &client_id, &dc.device_code, dc.interval)
+        .await
+        .map_err(AppError::github)?;
 
     {
         let mut cfg = state.config.lock().await;
         cfg.github_token = Some(token);
-        config::save(&cfg).map_err(|e| format!("Could not save GitHub token: {e}"))?;
+        config::save(&cfg)
+            .map_err(|e| AppError::config(format!("Could not save GitHub token: {e}")))?;
     }
     let _ = on_event.send(GithubLoginEvent::Done);
     Ok(())
@@ -674,17 +735,22 @@ async fn github_login_inner(
 
 /// List every repository the connected GitHub account can access.
 #[tauri::command]
-pub async fn github_list_repos(state: State<'_, AppState>) -> Result<Vec<Repo>, String> {
+pub async fn github_list_repos(state: State<'_, AppState>) -> Result<Vec<Repo>, AppError> {
     let (offline, token) = {
         let cfg = state.config.lock().await;
         (cfg.offline_mode, cfg.github_token.clone())
     };
     if offline {
-        return Err("Strict air-gapped mode is on — GitHub access is disabled.".to_string());
+        return Err(AppError::airgap_blocked(
+            "Strict air-gapped mode is on — GitHub access is disabled.",
+        ));
     }
-    let token = token.ok_or_else(|| "Not connected to GitHub. Connect your account first.".to_string())?;
+    let token = token
+        .ok_or_else(|| AppError::github("Not connected to GitHub. Connect your account first."))?;
     let client = state.engine.client();
-    github::list_repos(&client, &token).await
+    github::list_repos(&client, &token)
+        .await
+        .map_err(AppError::github)
 }
 
 /// Clone a repository (shallow) and index it into the RAG store, emitting
@@ -695,10 +761,12 @@ pub async fn github_index_repo(
     state: State<'_, AppState>,
     full_name: String,
     on_event: Channel<IndexEvent>,
-) -> Result<IndexStatus, String> {
+) -> Result<IndexStatus, AppError> {
     let result = github_index_repo_inner(&state, &full_name, &on_event).await;
     if let Err(ref e) = result {
-        let _ = on_event.send(IndexEvent::Error { message: e.clone() });
+        let _ = on_event.send(IndexEvent::Error {
+            message: e.message().to_string(),
+        });
     }
     result
 }
@@ -707,15 +775,18 @@ async fn github_index_repo_inner(
     state: &AppState,
     full_name: &str,
     on_event: &Channel<IndexEvent>,
-) -> Result<IndexStatus, String> {
+) -> Result<IndexStatus, AppError> {
     let (offline, token) = {
         let cfg = state.config.lock().await;
         (cfg.offline_mode, cfg.github_token.clone())
     };
     if offline {
-        return Err("Strict air-gapped mode is on — GitHub access is disabled.".to_string());
+        return Err(AppError::airgap_blocked(
+            "Strict air-gapped mode is on — GitHub access is disabled.",
+        ));
     }
-    let token = token.ok_or_else(|| "Not connected to GitHub. Connect your account first.".to_string())?;
+    let token = token
+        .ok_or_else(|| AppError::github("Not connected to GitHub. Connect your account first."))?;
 
     // App-controlled, unique clone destination (git requires it not yet exist).
     let nanos = std::time::SystemTime::now()
@@ -725,7 +796,7 @@ async fn github_index_repo_inner(
     let base = config::github_repos_dir();
     tokio::fs::create_dir_all(&base)
         .await
-        .map_err(|e| format!("Could not create repo scratch dir: {e}"))?;
+        .map_err(|e| AppError::config(format!("Could not create repo scratch dir: {e}")))?;
     let dest = base.join(format!("clone_{}_{}", std::process::id(), nanos));
 
     let _ = on_event.send(IndexEvent::Status {
@@ -733,7 +804,7 @@ async fn github_index_repo_inner(
     });
     if let Err(e) = github::clone_repo(full_name, &token, &dest).await {
         let _ = tokio::fs::remove_dir_all(&dest).await; // remove any partial clone
-        return Err(e);
+        return Err(AppError::github(e));
     }
 
     let _ = on_event.send(IndexEvent::Status {
@@ -744,7 +815,9 @@ async fn github_index_repo_inner(
     let _ = tokio::fs::remove_dir_all(&dest).await;
 
     if chunks.is_empty() {
-        return Err("No indexable text files were found in that repository.".to_string());
+        return Err(AppError::invalid_input(
+            "No indexable text files were found in that repository.",
+        ));
     }
 
     let ev = on_event.clone();

@@ -119,7 +119,7 @@ function ConversationCard({
 }) {
   const Icon = KIND_ICON[conversation.kind];
   const pivotalRef = React.useRef<HTMLDivElement>(null);
-  let pivotalSeen = false;
+  const firstPivotalIndex = conversation.messages.findIndex((m) => m.pivotal);
 
   React.useEffect(() => {
     if (focusKey > 0 && pivotalRef.current) {
@@ -149,8 +149,7 @@ function ConversationCard({
 
       <div className="flex max-h-72 flex-col gap-2.5 overflow-auto p-3">
         {conversation.messages.map((m, i) => {
-          const isFirstPivotal = m.pivotal && !pivotalSeen;
-          if (m.pivotal) pivotalSeen = true;
+          const isFirstPivotal = i === firstPivotalIndex;
           return (
             <Message
               key={i}

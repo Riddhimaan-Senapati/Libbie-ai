@@ -8,6 +8,7 @@
 mod commands;
 mod config;
 mod engine;
+mod error;
 mod github;
 mod inference;
 mod vecstore;

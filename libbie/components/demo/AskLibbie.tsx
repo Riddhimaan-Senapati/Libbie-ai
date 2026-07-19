@@ -51,14 +51,22 @@ export function AskLibbie({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onOpenChange]);
 
-  React.useEffect(() => {
+  // Reset the palette state when it opens (adjust state during render rather
+  // than in an effect to avoid an extra render pass).
+  const [prevOpen, setPrevOpen] = React.useState(open);
+  if (open !== prevOpen) {
+    setPrevOpen(open);
     if (open) {
       setQuery("");
       setActive(0);
-      // focus after mount
-      const t = setTimeout(() => inputRef.current?.focus(), 40);
-      return () => clearTimeout(t);
     }
+  }
+
+  React.useEffect(() => {
+    if (!open) return;
+    // focus after mount
+    const t = setTimeout(() => inputRef.current?.focus(), 40);
+    return () => clearTimeout(t);
   }, [open]);
 
   // Lock body scroll while the palette is open.
@@ -113,9 +121,12 @@ export function AskLibbie({
     }
   }
 
-  React.useEffect(() => {
+  // Reset the highlighted result whenever the query changes.
+  const [prevQuery, setPrevQuery] = React.useState(query);
+  if (query !== prevQuery) {
+    setPrevQuery(query);
     setActive(0);
-  }, [query]);
+  }
 
   function choose(a: Answer | undefined) {
     if (!a) return;

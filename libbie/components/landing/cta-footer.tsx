@@ -42,7 +42,7 @@ export function CtaFooter() {
             <LibbieAvatar size={48} showStatus />
           </div>
           <h2 className="text-balance font-display text-4xl font-normal leading-[1.08] tracking-tight text-foreground sm:text-5xl">
-            Libbie remembers why. So you don't have to.
+            Libbie remembers why. So you don&apos;t have to.
           </h2>
           <p className="mx-auto mt-5 max-w-xl text-pretty text-base leading-relaxed text-muted-foreground">
             Watch her reconstruct the intent behind a real germline variant-calling pipeline,

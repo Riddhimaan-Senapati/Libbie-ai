@@ -61,7 +61,7 @@ export function CodeCanvas({
       lineRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
     }
     // re-run when the focus nonce changes (re-asking the same line)
-  }, [activeFocus?.lineStart, activeFocus?.nonce]);
+  }, [activeFocus, activeFocus?.lineStart, activeFocus?.nonce]);
 
   const stalePoints = staleness.length;
 

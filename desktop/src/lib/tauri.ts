@@ -8,6 +8,8 @@
 //     over loopback, so the full experience can be developed/verified in a
 //     normal browser. This path is dev-only; the shipped app always uses IPC.
 
+import { ChatSSEParser } from "@/lib/sse";
+
 export interface AppConfig {
   llama_binary: string | null;
   vllm_binary: string | null;
@@ -95,6 +97,51 @@ export type StreamEvent =
   | { type: "usage"; inputTokens: number; outputTokens: number; tokensPerSec: number | null }
   | { type: "done"; finishReason: string }
   | { type: "error"; message: string };
+
+/**
+ * The `kind` tag of a structured error returned by a Rust command (mirrors the
+ * Rust `AppError` enum in `src-tauri/src/error.rs`). Switch on this to recover
+ * programmatically — e.g. treat `vectorStoreUnavailable` as "fall back to
+ * lexical retrieval" rather than surfacing a hard error.
+ */
+export type AppErrorKind =
+  | "engineNotConfigured"
+  | "modelNotSelected"
+  | "modelNotFound"
+  | "engineSpawnFailed"
+  | "engineUnhealthy"
+  | "engineUnreachable"
+  | "engineError"
+  | "embedding"
+  | "airgapBlocked"
+  | "vectorStoreUnavailable"
+  | "vectorStore"
+  | "config"
+  | "invalidInput";
+
+/** A structured error thrown (rejected) by a Tauri command invocation. */
+export interface AppError {
+  kind: AppErrorKind;
+  message: string;
+}
+
+/** Type guard for the structured error shape crossing the IPC boundary. */
+export function isAppError(e: unknown): e is AppError {
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    "kind" in e &&
+    "message" in e &&
+    typeof (e as { message: unknown }).message === "string"
+  );
+}
+
+/** Best-effort human-readable message from any thrown command error. */
+export function errorMessage(e: unknown): string {
+  if (isAppError(e)) return e.message;
+  if (e instanceof Error) return e.message;
+  return String(e);
+}
 
 /** A KNN result row from the vector store (mirrors Rust `Hit`). */
 export interface Hit {
@@ -344,68 +391,25 @@ async function devStreamChat(
   }
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
-  let buf = "";
-  let finish = "stop";
-  // Usage accounting: provider `usage` wins; llama.cpp `timings` is the fallback
-  // for counts and the only source of tokens/sec; char/4 is the last resort.
-  let usageIn: number | null = null;
-  let usageOut: number | null = null;
-  let timingsIn: number | null = null;
-  let timingsOut: number | null = null;
-  let tokensPerSec: number | null = null;
-  let streamedChars = 0;
-  const estTokens = (chars: number) => Math.ceil(chars / 4);
-  const emitUsage = () => {
-    const inputTokens =
-      usageIn ??
-      timingsIn ??
-      estTokens(messages.reduce((n, m) => n + m.content.length, 0));
-    const outputTokens = usageOut ?? timingsOut ?? estTokens(streamedChars);
-    handlers.onUsage?.({ inputTokens, outputTokens, tokensPerSec });
-  };
+  // Browser-dev fallback: main's shared SSE parser handles tokens/done. Real
+  // token/cost accounting runs through the Tauri Channel in the shipped app
+  // (see the isTauri() branch), so the dev path doesn't emit usage.
+  const parser = new ChatSSEParser();
   for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let nl: number;
-    while ((nl = buf.indexOf("\n")) !== -1) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (!line.startsWith("data:")) continue;
-      const data = line.slice(5).trim();
-      if (data === "[DONE]") {
-        emitUsage();
-        handlers.onDone(finish);
+    for (const evt of parser.push(decoder.decode(value, { stream: true }))) {
+      if (evt.type === "token") {
+        handlers.onToken(evt.text);
+      } else {
+        handlers.onDone(evt.finishReason);
         return;
-      }
-      if (!data) continue;
-      try {
-        const json = JSON.parse(data);
-        if (json.usage) {
-          if (typeof json.usage.prompt_tokens === "number") usageIn = json.usage.prompt_tokens;
-          if (typeof json.usage.completion_tokens === "number")
-            usageOut = json.usage.completion_tokens;
-        }
-        if (json.timings) {
-          if (typeof json.timings.predicted_per_second === "number")
-            tokensPerSec = json.timings.predicted_per_second;
-          if (typeof json.timings.prompt_n === "number") timingsIn = json.timings.prompt_n;
-          if (typeof json.timings.predicted_n === "number") timingsOut = json.timings.predicted_n;
-        }
-        const choice = json.choices?.[0];
-        if (choice?.finish_reason) finish = choice.finish_reason;
-        const text = choice?.delta?.content;
-        if (text) {
-          streamedChars += text.length;
-          handlers.onToken(text);
-        }
-      } catch {
-        /* ignore keep-alive lines */
       }
     }
   }
-  emitUsage();
-  handlers.onDone(finish);
+  for (const evt of parser.end()) {
+    if (evt.type === "done") handlers.onDone(evt.finishReason);
+  }
 }
 
 // ---------------------------------------------------------------------------

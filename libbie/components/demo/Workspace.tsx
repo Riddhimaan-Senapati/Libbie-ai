@@ -16,7 +16,6 @@ import {
 
 import { pipeline, answers } from "@/lib/data";
 import type { Answer } from "@/lib/types";
-import { cn } from "@/lib/utils";
 
 import { QueryConsole } from "./QueryConsole";
 import { AnswerBody } from "./AnswerBody";

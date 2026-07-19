@@ -1,2 +1,27 @@
+# Deployment / secrets
 .vercel
 .env*
+
+# Dependencies & build output (each app also has its own .gitignore)
+node_modules/
+dist/
+.next/
+out/
+target/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+*.swo
+
+# Stray screenshot-tool output (e.g. an accidental `--full-page` capture)
+--full-page
+*.tmp

@@ -14,6 +14,7 @@ use tauri::ipc::Channel;
 use futures_util::StreamExt;
 
 use crate::config::ProviderTarget;
+use crate::error::AppError;
 
 /// One chat message in the OpenAI schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,16 +84,19 @@ fn est_tokens(chars: usize) -> u32 {
 /// The URL is parsed and its host matched exactly (see
 /// `config::is_loopback_host`) — a substring test would accept
 /// `http://127.0.0.1.evil.com` or `http://evil.com/?x=localhost`.
-pub fn assert_loopback(base_url: &str) -> Result<(), String> {
-    let url = reqwest::Url::parse(base_url)
-        .map_err(|e| format!("Air-gapped mode: unparseable engine URL {base_url:?} ({e})"))?;
+pub fn assert_loopback(base_url: &str) -> Result<(), AppError> {
+    let url = reqwest::Url::parse(base_url).map_err(|e| {
+        AppError::airgap_blocked(format!(
+            "Air-gapped mode: unparseable engine URL {base_url:?} ({e})"
+        ))
+    })?;
     let host = url.host_str().unwrap_or("");
     if crate::config::is_loopback_host(host) {
         Ok(())
     } else {
-        Err(format!(
+        Err(AppError::airgap_blocked(format!(
             "Air-gapped mode blocked a non-loopback request to {base_url}"
-        ))
+        )))
     }
 }
 
@@ -105,13 +109,16 @@ fn with_bearer(req: reqwest::RequestBuilder, key: &Option<String>) -> reqwest::R
 }
 
 /// Pass the response through when it is 2xx; otherwise fail with the body text.
-async fn ensure_success(resp: reqwest::Response, what: &str) -> Result<reqwest::Response, String> {
+async fn ensure_success(
+    resp: reqwest::Response,
+    what: &str,
+) -> Result<reqwest::Response, AppError> {
     if resp.status().is_success() {
         Ok(resp)
     } else {
         let code = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        Err(format!("{what} returned {code}: {text}"))
+        Err(AppError::engine_error(format!("{what} returned {code}: {text}")))
     }
 }
 
@@ -186,7 +193,7 @@ pub async fn stream_chat(
     messages: Vec<ChatMessage>,
     opts: ChatOptions,
     channel: &Channel<StreamEvent>,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     if target.is_local {
         assert_loopback(&target.base_url)?;
     }
@@ -194,7 +201,7 @@ pub async fn stream_chat(
     let resp = chat_request(client, target, &messages, &opts)
         .send()
         .await
-        .map_err(|e| format!("Could not reach the model provider: {e}"))?;
+        .map_err(|e| AppError::engine_unreachable(format!("Could not reach the model provider: {e}")))?;
     let resp = ensure_success(resp, "Provider").await?;
 
     let anthropic = target.anthropic;
@@ -236,7 +243,7 @@ pub async fn stream_chat(
     };
 
     while let Some(chunk) = stream.next().await {
-        let bytes = chunk.map_err(|e| format!("Stream error: {e}"))?;
+        let bytes = chunk.map_err(|e| AppError::engine_error(format!("Stream error: {e}")))?;
         buf.push_str(&String::from_utf8_lossy(&bytes));
 
         while let Some(pos) = buf.find('\n') {
@@ -318,7 +325,7 @@ pub async fn stream_chat(
                             .unwrap_or("provider stream error")
                             .to_string();
                         let _ = channel.send(StreamEvent::Error { message: msg.clone() });
-                        return Err(msg);
+                        return Err(AppError::engine_error(msg));
                     }
                     _ => {} // ping / content_block_start|stop / etc.
                 }
@@ -375,7 +382,7 @@ pub async fn embed(
     client: &reqwest::Client,
     target: &ProviderTarget,
     inputs: Vec<String>,
-) -> Result<Vec<Vec<f32>>, String> {
+) -> Result<Vec<Vec<f32>>, AppError> {
     if target.is_local {
         assert_loopback(&target.base_url)?;
     }
@@ -385,12 +392,14 @@ pub async fn embed(
     let resp = with_bearer(req, &target.api_key)
         .send()
         .await
-        .map_err(|e| format!("Could not reach the embedding provider: {e}"))?;
+        .map_err(|e| {
+            AppError::engine_unreachable(format!("Could not reach the embedding provider: {e}"))
+        })?;
     let resp = ensure_success(resp, "Embedding provider").await?;
     let json: Value = resp
         .json()
         .await
-        .map_err(|e| format!("Bad embedding response: {e}"))?;
+        .map_err(|e| AppError::embedding(format!("Bad embedding response: {e}")))?;
     // Sort by `index` when present so vector order matches input order.
     let mut rows: Vec<(i64, Vec<f32>)> = Vec::new();
     if let Some(data) = json.get("data").and_then(|d| d.as_array()) {

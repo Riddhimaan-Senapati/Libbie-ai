@@ -23,7 +23,6 @@ import {
 
 import { staleness, pipeline } from "@/lib/data";
 import type { StalenessItem, StalenessStatus } from "@/lib/types";
-import { cn } from "@/lib/utils";
 import {
   Accordion,
   AccordionContent,
