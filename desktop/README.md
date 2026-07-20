@@ -33,6 +33,14 @@ Grab an installer for your OS from the
   models, and an estimated dollar cost for cloud models (editable price table).
 - **GitHub integration** — connect via OAuth device flow and index any repo you can access,
   including private and org repos, then chat about your own code.
+- **Slack integration** — paste an `xoxp-` user token or use OAuth v2; pick channels/DMs and
+  index their history (Settings → *Connect Slack*).
+- **Email integration** — Gmail (OAuth, read-only) or any mailbox over IMAP (app password);
+  pick labels/mailboxes to index (Settings → *Connect Email*). Reply chains are threaded by root.
+- **Knowledge-graph view** — a `react-force-graph` view of the provenance graph (TopBar →
+  *Graph*): nodes coloured by kind, committed (solid) vs hypothesis (dashed) links, width by
+  confidence, an inspector, and node-kind/edge-type filters. Ships with a sample graph; load your
+  own with *Load graph.json…* (the picker runs in the Rust core).
 - **Semantic retrieval** — an on-disk `sqlite-vec` index (nomic-embed), with keyword fallback.
 
 ## Stack
@@ -81,6 +89,23 @@ from `src/lib/pricing.ts`, which you can edit.
 `LIBBIE_GITHUB_CLIENT_ID` or paste it in Settings. Requests the `repo` scope for private and
 org access; for SSO-enforced orgs, authorize the token for the org first. The token is stored by
 the core and used only to clone over a token-less URL (never written to `.git/config` or argv).
+
+**Slack.** Settings → *Connect Slack*. Easiest path: paste a user token (`xoxp-…`) from your own
+Slack app — no OAuth registration needed. For OAuth v2 instead, set a Slack app client id/secret
+(`LIBBIE_SLACK_CLIENT_ID` / `LIBBIE_SLACK_CLIENT_SECRET`) and register the fixed loopback redirect
+`http://localhost:3118/callback` (Slack does not allow arbitrary ports). Then pick channels/DMs to
+index. Scopes read history only.
+
+**Email.** Settings → *Connect Email*. Gmail uses OAuth (browser consent, `gmail.readonly`) — set a
+Google installed-app client id/secret (`LIBBIE_GMAIL_CLIENT_ID` / `_SECRET`). IMAP uses host + user
++ app password over verified TLS. Pick labels/mailboxes to index; reply chains thread by root.
+
+**Knowledge graph.** TopBar → *Graph*. Explore the provenance graph — filter by node kind / edge
+type, click a node to inspect its fields and incident edges. *Load graph.json…* opens a native
+picker (in the Rust core) to view a real `libbie join` output; the bundled sample renders by default.
+
+All connectors are egress and are disabled while strict air-gapped mode is on; connector tokens/
+passwords are held by the Rust core and never returned to the webview.
 
 ## Build installers
 

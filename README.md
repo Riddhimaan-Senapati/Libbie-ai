@@ -62,12 +62,19 @@ Libbie ships as three parts that share one design and one goal:
 - **Token & cost tracking** — a Tokens panel shows input/output tokens per call and for the
   session, tokens/sec for local models, and an estimated dollar cost for cloud models from an
   editable price table.
-- **Index any GitHub repo** — connect your GitHub account (OAuth device flow), pick any repo
-  you can access including private and org repos, and Libbie clones and indexes it so you can
-  ask about *your* code.
+- **Connect your own sources** — sign in with your own account and index what you actually use:
+  - **GitHub** (OAuth device flow) — any repo you can access, including private and org repos.
+  - **Slack** (paste an `xoxp-` token or OAuth) — pick channels/DMs and pull their history.
+  - **Email** — Gmail (OAuth, read-only) or any mailbox over **IMAP** (app password); pick
+    labels/mailboxes to index.
+- **Knowledge graph** — explore the provenance graph visually: nodes coloured by type, committed
+  vs unverified (hypothesis) links, an inspector, and filters. Loads the bundled sample or your
+  own `graph.json`.
+- **Token & cost tracking** — a Tokens panel shows input/output tokens per call and for the
+  session, tokens/sec for local models, and an estimated dollar cost for cloud models.
 - **Semantic retrieval** — an on-disk `sqlite-vec` index (nomic-embed) with keyword fallback.
 - **Air-gapped by default** — strict mode keeps every request on `127.0.0.1` and disables all
-  egress (cloud providers and downloads included). Turn it off to reach cloud services.
+  egress (cloud providers, downloads, and every connector). Turn it off to reach cloud services.
 
 ### Web demo (`libbie/`)
 The landing page and a live `/demo`: the dual-cited magic moment, a technical ↔ executive
@@ -80,8 +87,8 @@ authored sample data, clearly labelled in the UI.
 - **Join layer** — candidate generation across artifact classes, LLM adjudication, and a
   commit-vs-hypothesis rule (wrong edges are worse than missing ones).
 - **Inheritance Briefing** — a generated markdown handover doc per pipeline.
-- **GitHub ingest** — `libbie github login/repos/ingest` to pull any accessible repo into the
-  graph.
+- **Connectors** — `libbie github|slack|email …` pull any accessible repo, Slack channels, or
+  Gmail/IMAP mail into the graph (email threads reconstructed by root header).
 - **Edge-quality eval** — precision/recall per edge type against a hand-labelled gold set.
 
 ---
