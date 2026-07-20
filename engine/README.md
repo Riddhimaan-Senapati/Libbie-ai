@@ -71,6 +71,8 @@ libbie brief --pipeline germline > briefing.md
 | `libbie github login` | Authenticate to GitHub via OAuth device flow |
 | `libbie github repos` | List the repositories your account can access |
 | `libbie github ingest <owner/repo>` | Clone any accessible repo (incl. private/org) and ingest it into the graph |
+| `libbie slack {token,login,channels,ingest}` | Connect Slack (token paste or OAuth), list channels, ingest their history |
+| `libbie email {gmail,imap}` | Ingest Gmail (OAuth, read-only) or an IMAP mailbox (app password) |
 
 ## GitHub: ingest any repo you can access
 
@@ -89,6 +91,29 @@ The token is stored via the OS keyring when available (else a `0600` file in the
 used only for a token-less clone (`GIT_ASKPASS`, credential helpers disabled), so it never lands
 in `.git/config` or argv. For SSO-enforced orgs, authorize the token for the org first, or
 private repos won't appear. Register the OAuth App once (device flow enabled) to get a client id.
+
+## Slack & email: ingest your conversations
+
+Install the connector extras (permissive: `slack_sdk` MIT, `google-auth*` Apache; IMAP is stdlib):
+
+```bash
+pip install -e ".[dev,git,connectors]"
+
+# Slack — paste a user token (xoxp-) or OAuth (needs a Slack app + fixed redirect port):
+libbie slack token                 # paste an xoxp- token, validated via auth.test
+libbie slack channels              # list what the token can see
+libbie slack ingest C0123 C0456    # ingest those channels' history
+
+# Email — Gmail (OAuth, read-only) or any IMAP mailbox (app password):
+libbie email gmail --query "newer_than:90d"
+libbie email imap --host imap.fastmail.com --user you@example.com   # prompts for app password
+
+libbie join && libbie brief --pipeline <name>
+```
+
+Email reply chains are threaded by their root (`In-Reply-To`/`References`), and `thread_id` is
+namespaced by source so mail can't merge across accounts/connectors. IMAP connects over verified
+TLS. Tokens are stored via keyring (else a `0600` file) and never logged.
 
 ## Layout
 

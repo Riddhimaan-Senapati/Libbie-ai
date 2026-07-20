@@ -170,3 +170,36 @@ Reproduce: `.venv/Scripts/python -m eval_scenario.run_eval`. Design + limitation
 
 **Test suite: 22/22 Python + 10/10 Rust.** Remaining honest gaps unchanged from §6 (the LLM
 adjudication is still only *exercised* offline by the mock in default runs; run 8b to measure live).
+
+---
+
+## 9. Follow-up (part 3): live connectors, graph viz, release
+
+### 9a. Live Slack + email connectors (engine + desktop)
+Connect a real account and index it. **Engine:** `libbie slack {token,login,channels,ingest}`
+(slack_sdk MIT / httpx; token-paste + OAuth v2 fixed-port; cursor pagination + 429 Retry-After) and
+`libbie email {gmail,imap}` (Gmail via google-auth\* Apache `run_local_server`; IMAP via stdlib).
+Email thread reconstruction by root header (cycle-safe), `thread_id` namespaced by source. **Desktop:**
+`oauth.rs` (PKCE + CSRF + `tiny_http` loopback), `slack.rs`, `email.rs` (Gmail REST + IMAP via
+`async-imap`/rustls + `mail-parser`) → Connect-Slack / Connect-Email Settings flows → RAG index.
+
+### 9b. Knowledge-graph visualization (desktop)
+`react-force-graph-2d` (MIT) view of the provenance graph: nodes by kind, committed (solid) vs
+hypothesis (amber-dashed) edges, width by confidence, inspector + legend + filters; bundled sample +
+`open_graph_json` (native picker in Rust).
+
+### 9c. Adversarial review — 2 CRITICAL fixed
+- `read_graph_json(path)` let the untrusted webview read any `.json` (incl. `config.json` secrets) →
+  replaced with `open_graph_json` (picker runs in Rust; no path from JS).
+- Engine IMAP used `imaplib.IMAP4_SSL()`'s **unverified** default context → `ssl.create_default_context()`.
+- MEDIUM: email `thread_id` namespaced by source (forged `In-Reply-To` can't cross-merge). LOW: Slack
+  `Retry-After` parsed defensively.
+
+### 9d. Demo site + release
+Marketing site refreshed via agent-browser (Sources + Graph sections, real screenshots; unshipped
+claims removed). **v0.1.0 released** — `.github/workflows/release.yml` (tauri-action) built and
+published Windows/macOS/Linux installers on the `v0.1.0` tag; README download links resolve to them.
+Installers are **unsigned** (see `NEXT_STEPS.md` P0-3).
+
+**Tests at this point:** engine 58/58 · desktop cargo fmt+clippy clean, 47/47, build · both web builds.
+Full orientation for the next session: [`../CLAUDE.md`](../CLAUDE.md); backlog: [`NEXT_STEPS.md`](NEXT_STEPS.md).
