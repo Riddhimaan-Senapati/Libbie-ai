@@ -60,6 +60,12 @@ libbie join
 libbie brief --pipeline germline > briefing.md
 ```
 
+One-command health check (ingest → join → eval → briefing on the sample, offline mock backend):
+
+```bash
+./.venv/Scripts/python scripts/smoke_test.py   # 12 checks, exits 0 on success
+```
+
 ## Commands
 
 | Command | What it does |

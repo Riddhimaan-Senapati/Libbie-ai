@@ -45,6 +45,22 @@ cd ../desktop && npm install && npm run build
 
 If those pass you already know the build is healthy. The rest is about seeing it behave.
 
+## The one-command engine check
+
+If you only run one thing, run the smoke test. It drives the whole offline pipeline (ingest, join,
+eval, briefing) over the bundled sample data and prints a PASS/FAIL line, so you get a yes/no in a
+few seconds without reading any output yourself.
+
+```bash
+cd engine
+python -m venv .venv && ./.venv/Scripts/pip install -e ".[dev,git,connectors]"
+./.venv/Scripts/python scripts/smoke_test.py     # macOS/Linux: ./.venv/bin/python
+```
+
+You should see twelve green checks and `SMOKE TEST PASSED`. It exits 0 on success and 1 if anything
+is off, so it also works as a health check in a script. The section below does the same run by hand
+if you want to actually read the briefing.
+
 ## Test the engine on the sample data
 
 This is the best five minutes you can spend. It ingests a small made-up genomics lab, joins the
@@ -114,6 +130,8 @@ If you'd rather not build Tauri, you can open just the webview in a browser with
 browser mode. The knowledge graph still renders its bundled sample, which is handy for a quick
 look.
 
+![The desktop workspace: file tree and code canvas on the left, and the Libbie rail already flagging the load-bearing GRCh37 decision before you ask.](docs/screenshots/desktop-workspace.png)
+
 Once it's open, click the Settings gear and pick how you want to run it:
 
 - **Local model.** Point it at a GGUF you already have, or use "Download a model from
@@ -130,13 +148,20 @@ While you're in there, three more things worth a look:
 
 - **Tokens** (top bar). Ask a couple of questions and watch it count input and output tokens for
   the session. Local models show tokens per second; cloud models show an estimated dollar cost.
+
+  ![The Token and cost usage panel before any questions, showing the empty-session state.](docs/screenshots/desktop-tokens.png)
 - **Graph** (top bar). This is the provenance graph as a force-directed diagram: nodes coloured
   by type, solid links for confirmed relationships and dashed amber ones for unverified guesses,
   thicker links for higher confidence. Click a node to inspect it, and use the filters on the
   left. It opens on a legible core; toggle `authored_by` back on if you want to see the full mesh.
+
+  ![The desktop Graph view: the sample provenance graph with a type legend, solid committed links, and dashed amber hypothesis links.](docs/screenshots/desktop-graph.png)
+
 - **Connectors.** Settings has Connect GitHub, Connect Slack, and Connect Email. Turn off air-gap
   first (they're egress, so strict mode disables them on purpose). Connect an account, pick what
   to index, and then chat over it.
+
+  ![The desktop Settings connectors: download a model from HuggingFace, and Connect GitHub to index a repo.](docs/screenshots/desktop-connectors.png)
 
 One behaviour worth testing deliberately: flip Strict air-gapped mode back on and confirm the
 cloud provider, the download button, and every connector go dark. That switch is the security
@@ -153,6 +178,11 @@ Ask one of the suggested "why" questions and you'll see the same dual-cited answ
 versus executive toggle, the staleness panel, and the one-click handover export. This one is
 authored sample data start to finish, and the UI says so, so treat it as a polished tour rather
 than a live system.
+
+![The web demo magic moment: Libbie's GRCh37 answer with the code citation (params.config L6) and the Slack conversation that justified it, side by side.](docs/screenshots/web-demo-magic-moment.png)
+
+This is the shot that shows the whole point. One answer, backed by the exact code line and the
+exact conversation, with both visible at once.
 
 ## When something looks off
 
