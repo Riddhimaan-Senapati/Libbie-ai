@@ -119,6 +119,7 @@ git tag -a vX.Y.Z -m "…" && git push origin vX.Y.Z
 download links point at `/releases/latest`). Installers are currently **unsigned** (see NEXT_STEPS).
 
 ## Where the context is
+- [`TESTING.md`](TESTING.md) — hand-testing walkthrough for a human (engine, desktop, web).
 - [`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md) — what was built + the license/security audits.
 - [`docs/NEXT_STEPS.md`](docs/NEXT_STEPS.md) — prioritized backlog for the next session.
 - [`docs/main_plan.md`](docs/main_plan.md) — the full engineering plan the engine implements.
