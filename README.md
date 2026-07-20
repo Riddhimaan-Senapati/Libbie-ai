@@ -163,6 +163,7 @@ over PyMuPDF, GitPython over pygit2, reqwest/httpx over LGPL clients). See
 [`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md) for the full audit.
 
 ## Docs
+- [`TESTING.md`](TESTING.md) — how to test Libbie by hand (engine, desktop, web).
 - [`desktop/README.md`](desktop/README.md) — desktop app: providers, models, GitHub, air-gap.
 - [`engine/README.md`](engine/README.md) — the provenance engine and CLI.
 - [`libbie/README.md`](libbie/README.md) — the web demo.
