@@ -39,6 +39,15 @@ export default defineConfig({
     target: "es2021",
     minify: "esbuild",
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        // GraphView is already lazy. Split its heavy renderer too so no optional
+        // on-demand chunk crosses the 500 kB roadmap budget.
+        manualChunks: {
+          "force-graph": ["react-force-graph-2d"],
+        },
+      },
+    },
   },
   // Unit tests (vitest). Pure logic runs in Node; aliases above apply here too.
   test: {

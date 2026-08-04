@@ -15,14 +15,12 @@ authors = [{ name = "Libbie.ai" }]
 #   pydantic     MIT     - typed nodes/edges + validation
 #   pyyaml       MIT     - config file (plan section 7)
 #   httpx        BSD-3   - LLM HTTP client (OpenAI-compatible local + Anthropic API)
-#   networkx     BSD-3   - in-memory graph walks for retrieval/briefing
 #   pypdf        BSD-3   - PDF text extraction (deliberately NOT PyMuPDF/fitz, which is AGPL-3.0)
 #   typer        MIT     - CLI (type-hint driven; built on click, which stays a transitive BSD-3 dep)
 dependencies = [
     "pydantic>=2.6",
     "pyyaml>=6.0",
     "httpx>=0.27",
-    "networkx>=3.2",
     "pypdf>=4.2",
     "typer>=0.12",
 ]

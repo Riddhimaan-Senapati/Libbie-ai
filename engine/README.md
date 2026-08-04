@@ -31,7 +31,6 @@ avoid the common copyleft traps in this problem space:
 | PDF extraction | `pypdf` (BSD-3) | PyMuPDF/`fitz` (**AGPL-3.0**) |
 | git ingestion | `GitPython` (BSD-3) | `pygit2`/libgit2 (**GPL-2.0** w/ linking exception) |
 | LLM client | `httpx` (BSD-3) direct | — |
-| graph ops | `networkx` (BSD-3) | — |
 
 Model **weights** named in the plan carry their own terms: Qwen3 (Apache-2.0),
 `bge-m3` / `nomic-embed` (Apache-2.0/MIT) are permissive. **Llama-3.3 is *not* OSI**:

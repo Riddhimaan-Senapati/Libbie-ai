@@ -303,6 +303,14 @@ pub struct IndexStatus {
     pub dim: Option<usize>,
 }
 
+/// Both evidence legs from one query embedding. Keeping this as one IPC call
+/// avoids paying the embedding-engine round trip once per kind.
+#[derive(Debug, Clone, Serialize)]
+pub struct VectorRetrieval {
+    pub code_hits: Vec<Hit>,
+    pub conversation_hits: Vec<Hit>,
+}
+
 #[tauri::command]
 pub async fn index_status(state: State<'_, AppState>) -> Result<IndexStatus, AppError> {
     // A missing store is reported as "not indexed" rather than an error, so the
@@ -421,6 +429,31 @@ pub async fn vector_search(
         .next()
         .ok_or_else(|| AppError::embedding("No query embedding returned."))?;
     store.knn(&emb, k, kind.as_deref())
+}
+
+/// Embed `query` once, then search both citation kinds against that same vector.
+#[tauri::command]
+pub async fn retrieve_vector(
+    state: State<'_, AppState>,
+    query: String,
+    code_k: usize,
+    conversation_k: usize,
+) -> Result<VectorRetrieval, AppError> {
+    let store = state.vec()?;
+    let target = {
+        let cfg = state.config.lock().await;
+        cfg.embed_target()
+    };
+    let client = state.engine.client();
+    let vecs = inference::embed(&client, &target, vec![format!("search_query: {query}")]).await?;
+    let emb = vecs
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::embedding("No query embedding returned."))?;
+    Ok(VectorRetrieval {
+        code_hits: store.knn(&emb, code_k, Some("code"))?,
+        conversation_hits: store.knn(&emb, conversation_k, Some("conversation"))?,
+    })
 }
 
 // ---- HuggingFace model download -------------------------------------------

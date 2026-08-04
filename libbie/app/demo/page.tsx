@@ -57,6 +57,11 @@ export default function DemoPage() {
   const [localStatus, setLocalStatus] = React.useState<string | null>(null);
   const [answeredLocally, setAnsweredLocally] = React.useState(false);
   const nonce = React.useRef(0);
+  const pendingTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  React.useEffect(() => () => {
+    if (pendingTimerRef.current) clearTimeout(pendingTimerRef.current);
+  }, []);
 
   const selectedFile: CodeFile =
     getCodeFile(selectedPath) ?? pipeline.files[0];
@@ -70,6 +75,7 @@ export default function DemoPage() {
 
   const askAnswer = React.useCallback(
     (a: Answer) => {
+      if (pendingTimerRef.current) clearTimeout(pendingTimerRef.current);
       setView("technical");
       setThinking(true);
       setAnswer(null);
@@ -85,13 +91,13 @@ export default function DemoPage() {
       // focus the first code citation on the canvas immediately
       if (a.codeCitations[0]) focusCode(a.codeCitations[0]);
 
-      const t = setTimeout(() => {
+      pendingTimerRef.current = setTimeout(() => {
         setThinking(false);
         setLocalStatus(null);
         setAnswer(a);
         setAnsweredLocally(runsLocal);
+        pendingTimerRef.current = null;
       }, delay);
-      return () => clearTimeout(t);
     },
     [localMode, focusCode],
   );
@@ -156,7 +162,7 @@ export default function DemoPage() {
         </AnimatePresence>
 
         {/* center canvas */}
-        <main className="flex max-h-[55vh] min-h-0 min-w-0 flex-1 flex-col gap-2 p-3 lg:max-h-none">
+        <main className={cn("flex min-h-0 min-w-0 flex-1 flex-col gap-2 p-3 lg:max-h-none", answer ? "max-h-[32vh]" : "max-h-[55vh]")}>
           {leftCollapsed && (
             <button
               type="button"
@@ -175,6 +181,7 @@ export default function DemoPage() {
               setAskOpen(true);
             }}
           />
+          {answer && <p className="text-xs text-muted-foreground lg:hidden">Source preview collapsed after the answer. Open pipeline files to view the full file.</p>}
         </main>
 
         {/* right rail = Libbie — a single mount.

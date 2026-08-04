@@ -1,5 +1,11 @@
-import { describe, it, expect } from "vitest";
-import { retrieve, chunkCorpus, buildMessages } from "@/lib/rag";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const retrieveVectorMock = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/tauri", () => ({ retrieveVector: retrieveVectorMock }));
+
+import { retrieve, retrieveVector, chunkCorpus, buildMessages } from "@/lib/rag";
+
+beforeEach(() => retrieveVectorMock.mockReset());
 
 // These exercise the hand-tuned lexical retrieval + confidence heuristics — the
 // logic the code review flagged as most likely to regress silently.
@@ -76,6 +82,21 @@ describe("chunkCorpus", () => {
       expect(c.conv_id).toBeTruthy();
       expect(c.path).toBeNull();
     }
+  });
+});
+
+describe("retrieveVector", () => {
+  it("uses one combined retrieval request for both evidence kinds", async () => {
+    retrieveVectorMock.mockResolvedValue({
+      code_hits: [{ id: 1, path: "conf/params.config", kind: "code", line_start: 1, conv_id: "", distance: 0, similarity: 1 }],
+      conversation_hits: [],
+    });
+
+    const result = await retrieveVector("Why GRCh37?");
+
+    expect(retrieveVectorMock).toHaveBeenCalledTimes(1);
+    expect(retrieveVectorMock).toHaveBeenCalledWith("Why GRCh37?", 5, 5);
+    expect(result?.mode).toBe("vector");
   });
 });
 

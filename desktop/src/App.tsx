@@ -48,16 +48,26 @@ import { CodeCanvas, refToFocus, type CanvasFocus } from "@/components/CodeCanva
 import { LibbieRail, LibbieOrb, type AnswerSession } from "@/components/LibbieRail";
 import { AskLibbie } from "@/components/AskLibbie";
 import { EngineStatusPill } from "@/components/EngineStatusPill";
-import { Settings } from "@/components/Settings";
 import { Sheet } from "@/components/Overlay";
 import { RiskPanel } from "@/components/RiskPanel";
 import { HandoverDoc } from "@/components/HandoverDoc";
 import { TokenPanel, type CallRecord } from "@/components/TokenPanel";
-import { GraphView } from "@/components/GraphView";
 import { costUsd } from "@/lib/pricing";
 import { cn } from "@/lib/utils";
 
 const DEFAULT_FILE = "conf/params.config";
+
+// Optional surfaces pull in connector forms and the force-graph fixture. Keep
+// them out of the boot path until the user actually opens the corresponding UI.
+const Settings = React.lazy(async () => {
+  const module = await import("@/components/Settings");
+  return { default: module.Settings };
+});
+const GraphView = React.lazy(async () => {
+  const module = await import("@/components/GraphView");
+  return { default: module.GraphView };
+});
+const LoadingSurface = () => <div className="grid h-full place-items-center text-sm text-muted-foreground">Loading…</div>;
 
 type Screen = "reading" | "workspace" | "settings" | "graph";
 
@@ -444,6 +454,7 @@ export default function App() {
           settingsActive
         />
         <main className="min-h-0 flex-1">
+          <React.Suspense fallback={<LoadingSurface />}>
           <Settings
             config={config}
             status={status}
@@ -464,6 +475,7 @@ export default function App() {
             onBuildIndex={handleBuildIndex}
             onRefreshIndex={refreshIndex}
           />
+          </React.Suspense>
         </main>
       </div>
     );
@@ -485,7 +497,7 @@ export default function App() {
           graphActive
         />
         <main className="min-h-0 flex-1">
-          <GraphView />
+          <React.Suspense fallback={<LoadingSurface />}><GraphView /></React.Suspense>
         </main>
       </div>
     );

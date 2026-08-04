@@ -5,6 +5,12 @@
 
 This is a follow-up to [`OPTIMIZATION_PLAN.md`](OPTIMIZATION_PLAN.md). It starts by trying to disprove that plan's claims, then replaces its priority order with work tied to measured correctness, payload, latency, and user experience. It does not propose replacing the authored web demo with a live backend, relaxing the air-gap guarantees, or changing the dual-citation product contract.
 
+## Implementation status (2026-08-04)
+
+Completed: source-scoped transactional indexing; one-embedding semantic retrieval; lazy desktop Settings and Graph surfaces; explicit local Latin WOFF2 fonts; staged-demo cancellation and disclosure; mobile source-preview compaction; `/demo` loading/error boundaries; engine CI with offline smoke coverage; and removal of unused `networkx` plus two unreferenced logo assets.
+
+Measured after the desktop changes: initial JavaScript is **437.55 kB minified / 137.02 kB gzip**; Settings is **45.91 kB**, and Graph is split into **327.63 kB** plus a **194.97 kB** renderer chunk. The graph, Gmail batching, connector checkpoints, broad monolith splits, and profiling-gated changes remain future measured work rather than being folded into this implementation.
+
 ## Executive verdict
 
 The existing plan is directionally strong, but it mixes four different kinds of work under one ranking:
@@ -291,4 +297,3 @@ Record cold and warm values separately: app boot, engine-ready time, first-token
 7. **Later, measured PRs:** Gmail batching, graph lookup indexes, boot-state restructuring, and component memoization.
 
 Every PR must preserve the air-gap enforcement in Rust, dual citations, technical/executive views from the same evidence, sample-data labeling, offline mock/smoke behavior, and the current full verification matrix.
-

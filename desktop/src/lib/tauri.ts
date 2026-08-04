@@ -185,6 +185,11 @@ export interface IndexStatus {
   dim: number | null;
 }
 
+export interface VectorRetrieval {
+  code_hits: Hit[];
+  conversation_hits: Hit[];
+}
+
 export const isTauri = (): boolean =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -554,6 +559,44 @@ export async function vectorSearch(
     distance: 1 - x.sim,
     similarity: Math.max(0, Math.min(1, x.sim)),
   }));
+}
+
+/** Embed a semantic query once and retrieve both citation kinds. */
+export async function retrieveVector(
+  query: string,
+  codeK: number,
+  conversationK: number,
+): Promise<VectorRetrieval> {
+  if (isTauri()) {
+    return ipc<VectorRetrieval>("retrieve_vector", {
+      query,
+      codeK,
+      conversationK,
+    });
+  }
+  // Dev mode keeps the same one-embedding contract as the desktop command.
+  const [q] = await devEmbedBatch([`search_query: ${query}`]);
+  if (!q) return { code_hits: [], conversation_hits: [] };
+  const qn = l2normalize(q);
+  const hitsFor = (kind: string, k: number): Hit[] =>
+    devIndex
+      .map((e, id) => ({ id, sim: dot(qn, e.embedding), e }))
+      .filter((x) => x.e.meta.kind === kind)
+      .sort((a, b) => b.sim - a.sim)
+      .slice(0, k)
+      .map((x) => ({
+        id: x.id,
+        path: x.e.meta.path ?? "",
+        kind: x.e.meta.kind,
+        line_start: x.e.meta.line_start,
+        conv_id: x.e.meta.conv_id ?? "",
+        distance: 1 - x.sim,
+        similarity: Math.max(0, Math.min(1, x.sim)),
+      }));
+  return {
+    code_hits: hitsFor("code", codeK),
+    conversation_hits: hitsFor("conversation", conversationK),
+  };
 }
 
 // ---------------------------------------------------------------------------

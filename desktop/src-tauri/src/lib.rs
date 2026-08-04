@@ -42,6 +42,7 @@ pub fn run() {
             commands::index_status,
             commands::build_index,
             commands::vector_search,
+            commands::retrieve_vector,
             commands::list_hf_gguf,
             commands::download_model,
             commands::github_login,

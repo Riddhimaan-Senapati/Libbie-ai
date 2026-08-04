@@ -36,7 +36,7 @@ export function AnswerBody({
         {answeredLocally && (
           <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 px-2.5 py-0.5 text-[11px] font-medium text-primary">
             <span className="size-1.5 rounded-full bg-primary" aria-hidden />
-            Answered locally
+            Simulated on-device answer · sample data
           </span>
         )}
       </div>

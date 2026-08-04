@@ -244,10 +244,9 @@ export async function retrieveVector(question: string): Promise<Retrieved | null
   let codeRows: Hit[];
   let convRows: Hit[];
   try {
-    [codeRows, convRows] = await Promise.all([
-      api.vectorSearch(question, 5, "code"),
-      api.vectorSearch(question, 5, "conversation"),
-    ]);
+    const result = await api.retrieveVector(question, 5, 5);
+    codeRows = result.code_hits;
+    convRows = result.conversation_hits;
   } catch {
     return null;
   }
