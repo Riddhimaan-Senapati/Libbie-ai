@@ -1,6 +1,9 @@
-//! Embedded vector store backed by **sqlite-vec**.  Vector values live in a
-//! `vec0` table; citation and source metadata live in an ordinary SQLite table.
-//! Keeping those separate lets one connector refresh its own rows without
+//! Embedded vector store backed by **sqlite-vec**.  Vector values plus the
+//! `kind`/`source_id` fields that constrain KNN live in the `vec0` table (only
+//! vec0 metadata columns are applied *during* the search); citation metadata
+//! (`path`, `line_start`, `conv_id`) lives in an ordinary `chunk_meta` table
+//! fetched via a join after the nearest neighbours are chosen. Keeping this
+//! split lets one connector refresh its own rows (by `source_id`) without
 //! destroying evidence indexed by another connector.
 
 use rusqlite::{ffi::sqlite3_auto_extension, params, Connection};
@@ -12,7 +15,7 @@ use std::sync::{Mutex, MutexGuard, Once};
 use crate::error::AppError;
 
 static INIT: Once = Once::new();
-const SCHEMA_VERSION: &str = "2";
+const SCHEMA_VERSION: &str = "3";
 
 /// One embedded chunk ready to be committed as part of a source refresh.
 /// `chunk_id` is stable within `source_id`, so callers can trace a stored row
@@ -171,7 +174,12 @@ impl VecStore {
         tx.execute_batch("drop table if exists chunks; drop table if exists chunk_meta;")
             .map_err(|e| AppError::vector_store(e.to_string()))?;
         tx.execute_batch(&format!(
-            "create virtual table chunks using vec0(id integer primary key, embedding float[{dim}] distance_metric=cosine);
+            "create virtual table chunks using vec0(
+                id integer primary key,
+                embedding float[{dim}] distance_metric=cosine,
+                kind text,
+                source_id text
+             );
              create table chunk_meta(
                  id integer primary key,
                  source_id text not null,
@@ -246,8 +254,13 @@ impl VecStore {
             .map_err(|e| AppError::vector_store(e.to_string()))?;
             let id = tx.last_insert_rowid();
             tx.execute(
-                "insert into chunks(id, embedding) values(?1, ?2)",
-                params![id, to_le_bytes(&normalize(chunk.embedding))],
+                "insert into chunks(id, embedding, kind, source_id) values(?1, ?2, ?3, ?4)",
+                params![
+                    id,
+                    to_le_bytes(&normalize(chunk.embedding)),
+                    chunk.kind,
+                    source_id
+                ],
             )
             .map_err(|e| AppError::vector_store(e.to_string()))?;
         }
@@ -277,7 +290,7 @@ impl VecStore {
         let sql = if kind.is_some() {
             "select m.id, m.path, m.kind, m.line_start, m.conv_id, v.distance
              from chunks v join chunk_meta m on m.id = v.id
-             where v.embedding match ?1 and v.k = ?2 and m.kind = ?3"
+             where v.embedding match ?1 and v.k = ?2 and v.kind = ?3"
         } else {
             "select m.id, m.path, m.kind, m.line_start, m.conv_id, v.distance
              from chunks v join chunk_meta m on m.id = v.id
@@ -384,5 +397,42 @@ mod tests {
             .replace_source(2, "slack", &[chunk("b", &[1.0, 0.0], "", "conversation")])
             .is_err());
         assert_eq!(store.count(), 1);
+    }
+
+    #[test]
+    fn knn_kind_filter_applies_during_search_not_after_top_k() {
+        let store = VecStore::open_in_memory().unwrap();
+        // Three conversation rows closer to the query than the single code row.
+        store
+            .replace_source(
+                3,
+                "slack",
+                &[
+                    chunk("c1", &[1.0, 0.0, 0.0], "", "conversation"),
+                    chunk("c2", &[0.966, 0.259, 0.0], "", "conversation"),
+                    chunk("c3", &[0.866, 0.5, 0.0], "", "conversation"),
+                ],
+            )
+            .unwrap();
+        store
+            .replace_source(
+                3,
+                "github",
+                &[chunk("f", &[0.707, 0.707, 0.0], "target.rs", "code")],
+            )
+            .unwrap();
+
+        // The global top-3 are all conversation, but a kind=code query must
+        // still return the nearest code row. A post-filter on the joined table
+        // would return zero rows here; a vec0 metadata filter returns one.
+        let code = store.knn(&[1.0, 0.0, 0.0], 3, Some("code")).unwrap();
+        assert_eq!(code.len(), 1);
+        assert_eq!(code[0].kind, "code");
+        assert_eq!(code[0].path, "target.rs");
+
+        let conv = store
+            .knn(&[1.0, 0.0, 0.0], 3, Some("conversation"))
+            .unwrap();
+        assert_eq!(conv.len(), 3);
     }
 }
