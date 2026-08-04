@@ -1,8 +1,7 @@
-//! Embedded vector store backed by **sqlite-vec** (pure C, statically linked via
-//! `cargo add sqlite-vec` + rusqlite "bundled" — no per-platform prebuilt
-//! binaries, runs anywhere SQLite runs). Vectors and their citation metadata
-//! live in one on-disk `.db`, mirroring the plan's pgvector+Postgres design but
-//! embedded and daemon-free — the right shape for an air-gapped single binary.
+//! Embedded vector store backed by **sqlite-vec**.  Vector values live in a
+//! `vec0` table; citation and source metadata live in an ordinary SQLite table.
+//! Keeping those separate lets one connector refresh its own rows without
+//! destroying evidence indexed by another connector.
 
 use rusqlite::{ffi::sqlite3_auto_extension, params, Connection};
 use serde::Serialize;
@@ -13,20 +12,30 @@ use std::sync::{Mutex, MutexGuard, Once};
 use crate::error::AppError;
 
 static INIT: Once = Once::new();
+const SCHEMA_VERSION: &str = "2";
+
+/// One embedded chunk ready to be committed as part of a source refresh.
+/// `chunk_id` is stable within `source_id`, so callers can trace a stored row
+/// back to a connector record even though SQLite assigns the numeric row id.
+pub struct IndexedChunk<'a> {
+    pub chunk_id: &'a str,
+    pub embedding: &'a [f32],
+    pub path: &'a str,
+    pub kind: &'a str,
+    pub line_start: i64,
+    pub conv_id: &'a str,
+}
 
 /// One KNN result row, carrying the citation metadata needed to rebuild a
 /// dual citation on the client.
 #[derive(Debug, Clone, Serialize)]
 pub struct Hit {
     pub id: i64,
-    /// Empty string when not applicable (vec0 TEXT metadata columns can't be NULL).
     pub path: String,
     pub kind: String,
     pub line_start: i64,
-    /// Empty string when not applicable.
     pub conv_id: String,
     pub distance: f32,
-    /// Cosine similarity in [0,1] (1 = identical), derived from distance.
     pub similarity: f32,
 }
 
@@ -34,11 +43,6 @@ pub struct VecStore {
     conn: Mutex<Connection>,
 }
 
-/// Lock the connection, recovering the guard if a previous holder panicked.
-///
-/// The connection is a plain SQLite handle with no cross-call invariant that a
-/// panic could corrupt, so treating a `PoisonError` as recoverable (rather than
-/// propagating a panic) keeps retrieval working after an unrelated hiccup.
 fn lock_conn(m: &Mutex<Connection>) -> MutexGuard<'_, Connection> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -62,18 +66,23 @@ fn normalize(v: &[f32]) -> Vec<f32> {
     }
 }
 
-/// Register the sqlite-vec extension exactly once for every future connection.
 fn ensure_extension() {
     INIT.call_once(|| unsafe {
-        // Standard sqlite-vec registration idiom: cast the init fn to the
-        // extension entry-point signature sqlite3 expects.
         #[allow(clippy::missing_transmute_annotations)]
         sqlite3_auto_extension(Some(std::mem::transmute(sqlite3_vec_init as *const ())));
     });
 }
 
+fn has_table(conn: &Connection, name: &str) -> Result<bool, AppError> {
+    conn.query_row(
+        "select exists(select 1 from sqlite_master where type = 'table' and name = ?1)",
+        [name],
+        |row| row.get(0),
+    )
+    .map_err(|e| AppError::vector_store(e.to_string()))
+}
+
 impl VecStore {
-    /// Open (creating if needed) an on-disk index database.
     pub fn open(db_path: PathBuf) -> Result<Self, AppError> {
         ensure_extension();
         if let Some(parent) = db_path.parent() {
@@ -109,7 +118,6 @@ impl VecStore {
         })
     }
 
-    /// Embedding dimension of the current index, if built.
     pub fn dim(&self) -> Option<usize> {
         let conn = lock_conn(&self.conn);
         conn.query_row("select value from libbie_meta where key='dim'", [], |r| {
@@ -119,66 +127,140 @@ impl VecStore {
         .and_then(|s| s.parse::<usize>().ok())
     }
 
-    /// Number of indexed chunks (0 if not built).
     pub fn count(&self) -> i64 {
         let conn = lock_conn(&self.conn);
-        conn.query_row("select count(*) from chunks", [], |r| r.get(0))
+        if !has_table(&conn, "chunk_meta").unwrap_or(false) {
+            return 0;
+        }
+        conn.query_row("select count(*) from chunk_meta", [], |r| r.get(0))
             .unwrap_or(0)
     }
 
-    /// (Re)create the vec0 table for a given embedding dimension, clearing any
-    /// prior index. Called at the start of a corpus (re)index.
-    pub fn reset(&self, dim: usize) -> Result<(), AppError> {
-        let conn = lock_conn(&self.conn);
-        conn.execute_batch("drop table if exists chunks;")
+    /// Create the source-aware schema, replacing the legacy single-corpus
+    /// layout once.  That legacy table had no source identity, so it cannot be
+    /// migrated losslessly; it was already overwritten by every old re-index.
+    fn initialise_schema(conn: &mut Connection, dim: usize) -> Result<(), AppError> {
+        let version: Option<String> = conn
+            .query_row(
+                "select value from libbie_meta where key='schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        if version.as_deref() == Some(SCHEMA_VERSION) {
+            let existing = conn
+                .query_row("select value from libbie_meta where key='dim'", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .map_err(|e| AppError::vector_store(e.to_string()))?
+                .parse::<usize>()
+                .map_err(|_| {
+                    AppError::vector_store("Vector index has an invalid embedding dimension.")
+                })?;
+            if existing != dim {
+                return Err(AppError::vector_store(format!(
+                    "Embedding dimension changed from {existing} to {dim}. Rebuild the vector index before adding this source."
+                )));
+            }
+            return Ok(());
+        }
+
+        let tx = conn
+            .transaction()
             .map_err(|e| AppError::vector_store(e.to_string()))?;
-        conn.execute_batch(&format!(
-            "create virtual table chunks using vec0(
-                id integer primary key,
-                embedding float[{dim}] distance_metric=cosine,
-                path text,
-                kind text,
-                line_start integer,
-                conv_id text
-            );"
+        tx.execute_batch("drop table if exists chunks; drop table if exists chunk_meta;")
+            .map_err(|e| AppError::vector_store(e.to_string()))?;
+        tx.execute_batch(&format!(
+            "create virtual table chunks using vec0(id integer primary key, embedding float[{dim}] distance_metric=cosine);
+             create table chunk_meta(
+                 id integer primary key,
+                 source_id text not null,
+                 chunk_id text not null,
+                 path text not null,
+                 kind text not null,
+                 line_start integer not null,
+                 conv_id text not null,
+                 unique(source_id, chunk_id)
+             );
+             create index chunk_meta_source_idx on chunk_meta(source_id);"
         ))
         .map_err(|e| AppError::vector_store(e.to_string()))?;
-        conn.execute(
+        tx.execute(
             "insert or replace into libbie_meta(key,value) values('dim',?1)",
             params![dim.to_string()],
         )
         .map_err(|e| AppError::vector_store(e.to_string()))?;
-        Ok(())
-    }
-
-    /// Insert one embedded chunk with its citation metadata. `path`/`conv_id`
-    /// use "" (not NULL) when not applicable — vec0 TEXT metadata is non-null.
-    pub fn insert(
-        &self,
-        id: i64,
-        embedding: &[f32],
-        path: &str,
-        kind: &str,
-        line_start: i64,
-        conv_id: &str,
-    ) -> Result<(), AppError> {
-        let bytes = to_le_bytes(&normalize(embedding));
-        let conn = lock_conn(&self.conn);
-        conn.execute(
-            "insert into chunks(id, embedding, path, kind, line_start, conv_id)
-             values (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, bytes, path, kind, line_start, conv_id],
+        tx.execute(
+            "insert or replace into libbie_meta(key,value) values('schema_version',?1)",
+            params![SCHEMA_VERSION],
         )
         .map_err(|e| AppError::vector_store(e.to_string()))?;
-        Ok(())
+        tx.commit()
+            .map_err(|e| AppError::vector_store(e.to_string()))
     }
 
-    /// K-nearest-neighbour search, optionally constrained to a `kind`
-    /// ("code" | "conversation").
+    /// Atomically replace one source after all of its embeddings are ready.
+    /// Other sources remain queryable, and any validation or SQLite error rolls
+    /// the transaction back to the previous version of this source.
+    pub fn replace_source(
+        &self,
+        dim: usize,
+        source_id: &str,
+        chunks: &[IndexedChunk<'_>],
+    ) -> Result<(), AppError> {
+        if source_id.trim().is_empty() {
+            return Err(AppError::invalid_input(
+                "Vector index source id cannot be empty.",
+            ));
+        }
+        if chunks.iter().any(|chunk| chunk.embedding.len() != dim) {
+            return Err(AppError::embedding(
+                "Embedding dimension was inconsistent within one indexing run.",
+            ));
+        }
+        let mut conn = lock_conn(&self.conn);
+        Self::initialise_schema(&mut conn, dim)?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| AppError::vector_store(e.to_string()))?;
+        tx.execute(
+            "delete from chunks where id in (select id from chunk_meta where source_id = ?1)",
+            [source_id],
+        )
+        .map_err(|e| AppError::vector_store(e.to_string()))?;
+        tx.execute("delete from chunk_meta where source_id = ?1", [source_id])
+            .map_err(|e| AppError::vector_store(e.to_string()))?;
+        for chunk in chunks {
+            tx.execute(
+                "insert into chunk_meta(source_id, chunk_id, path, kind, line_start, conv_id)
+                 values(?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    source_id,
+                    chunk.chunk_id,
+                    chunk.path,
+                    chunk.kind,
+                    chunk.line_start,
+                    chunk.conv_id
+                ],
+            )
+            .map_err(|e| AppError::vector_store(e.to_string()))?;
+            let id = tx.last_insert_rowid();
+            tx.execute(
+                "insert into chunks(id, embedding) values(?1, ?2)",
+                params![id, to_le_bytes(&normalize(chunk.embedding))],
+            )
+            .map_err(|e| AppError::vector_store(e.to_string()))?;
+        }
+        tx.commit()
+            .map_err(|e| AppError::vector_store(e.to_string()))
+    }
+
     pub fn knn(&self, query: &[f32], k: usize, kind: Option<&str>) -> Result<Vec<Hit>, AppError> {
         let bytes = to_le_bytes(&normalize(query));
         let conn = lock_conn(&self.conn);
-
+        if !has_table(&conn, "chunk_meta")? {
+            return Ok(Vec::new());
+        }
         let map = |row: &rusqlite::Row| -> rusqlite::Result<Hit> {
             let distance: f64 = row.get(5)?;
             Ok(Hit {
@@ -191,36 +273,26 @@ impl VecStore {
                 similarity: (1.0 - distance as f32).clamp(0.0, 1.0),
             })
         };
-
         let mut out = Vec::new();
-        if let Some(kd) = kind {
-            let mut stmt = conn
-                .prepare(
-                    "select id, path, kind, line_start, conv_id, distance
-                     from chunks
-                     where embedding match ?1 and k = ?2 and kind = ?3",
-                )
-                .map_err(|e| AppError::vector_store(e.to_string()))?;
-            let rows = stmt
-                .query_map(params![bytes, k as i64, kd], map)
-                .map_err(|e| AppError::vector_store(e.to_string()))?;
-            for r in rows {
-                out.push(r.map_err(|e| AppError::vector_store(e.to_string()))?);
-            }
+        let sql = if kind.is_some() {
+            "select m.id, m.path, m.kind, m.line_start, m.conv_id, v.distance
+             from chunks v join chunk_meta m on m.id = v.id
+             where v.embedding match ?1 and v.k = ?2 and m.kind = ?3"
         } else {
-            let mut stmt = conn
-                .prepare(
-                    "select id, path, kind, line_start, conv_id, distance
-                     from chunks
-                     where embedding match ?1 and k = ?2",
-                )
-                .map_err(|e| AppError::vector_store(e.to_string()))?;
-            let rows = stmt
-                .query_map(params![bytes, k as i64], map)
-                .map_err(|e| AppError::vector_store(e.to_string()))?;
-            for r in rows {
-                out.push(r.map_err(|e| AppError::vector_store(e.to_string()))?);
-            }
+            "select m.id, m.path, m.kind, m.line_start, m.conv_id, v.distance
+             from chunks v join chunk_meta m on m.id = v.id
+             where v.embedding match ?1 and v.k = ?2"
+        };
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(|e| AppError::vector_store(e.to_string()))?;
+        let rows = match kind {
+            Some(kd) => stmt.query_map(params![bytes, k as i64, kd], map),
+            None => stmt.query_map(params![bytes, k as i64], map),
+        }
+        .map_err(|e| AppError::vector_store(e.to_string()))?;
+        for row in rows {
+            out.push(row.map_err(|e| AppError::vector_store(e.to_string()))?);
         }
         Ok(out)
     }
@@ -230,41 +302,87 @@ impl VecStore {
 mod tests {
     use super::*;
 
+    fn chunk<'a>(
+        id: &'a str,
+        embedding: &'a [f32],
+        path: &'a str,
+        kind: &'a str,
+    ) -> IndexedChunk<'a> {
+        IndexedChunk {
+            chunk_id: id,
+            embedding,
+            path,
+            kind,
+            line_start: 1,
+            conv_id: "",
+        }
+    }
+
     #[test]
-    fn knn_finds_nearest_with_metadata_filter() {
-        let store = VecStore::open_in_memory().expect("open");
-        store.reset(3).expect("reset");
+    fn source_refresh_preserves_other_sources_and_does_not_duplicate() {
+        let store = VecStore::open_in_memory().unwrap();
         store
-            .insert(1, &[1.0, 0.0, 0.0], "a.config", "code", 6, "")
+            .replace_source(
+                3,
+                "github:acme/repo",
+                &[chunk("a", &[1.0, 0.0, 0.0], "a.rs", "code")],
+            )
             .unwrap();
         store
-            .insert(2, &[0.0, 1.0, 0.0], "b.nf", "code", 3, "")
+            .replace_source(
+                3,
+                "slack",
+                &[chunk("b", &[0.0, 1.0, 0.0], "", "conversation")],
+            )
             .unwrap();
         store
-            .insert(3, &[0.92, 0.08, 0.0], "c.config", "code", 14, "")
+            .replace_source(
+                3,
+                "github:acme/repo",
+                &[chunk("a", &[0.9, 0.1, 0.0], "a.rs", "code")],
+            )
             .unwrap();
+
+        assert_eq!(store.count(), 2);
+        assert_eq!(
+            store
+                .knn(&[0.0, 1.0, 0.0], 2, Some("conversation"))
+                .unwrap()
+                .len(),
+            1
+        );
+        let code = store.knn(&[1.0, 0.0, 0.0], 2, Some("code")).unwrap();
+        assert_eq!(code.len(), 1);
+        assert_eq!(code[0].path, "a.rs");
+    }
+
+    #[test]
+    fn invalid_refresh_leaves_previous_source_intact() {
+        let store = VecStore::open_in_memory().unwrap();
         store
-            .insert(4, &[0.0, 0.0, 1.0], "", "conversation", 0, "conv-x")
+            .replace_source(
+                3,
+                "github:acme/repo",
+                &[chunk("old", &[1.0, 0.0, 0.0], "old.rs", "code")],
+            )
             .unwrap();
+        let bad = [chunk("new", &[1.0, 0.0], "new.rs", "code")];
+        assert!(store.replace_source(3, "github:acme/repo", &bad).is_err());
 
-        assert_eq!(store.count(), 4);
-        assert_eq!(store.dim(), Some(3));
+        let hits = store.knn(&[1.0, 0.0, 0.0], 1, Some("code")).unwrap();
+        assert_eq!(hits[0].path, "old.rs");
+        assert_eq!(store.count(), 1);
+    }
 
-        // Nearest to [1,0,0] among code chunks should be "a.config", then "c.config".
-        let hits = store.knn(&[1.0, 0.0, 0.0], 2, Some("code")).expect("knn");
-        assert_eq!(hits.len(), 2);
-        assert_eq!(hits[0].path, "a.config");
-        assert_eq!(hits[1].path, "c.config");
-        assert!(hits[0].similarity > hits[1].similarity);
-
-        // The kind filter must exclude the conversation chunk.
-        assert!(hits.iter().all(|h| h.kind == "code"));
-
-        // Conversation-only search returns the conversation chunk.
-        let conv = store
-            .knn(&[0.0, 0.0, 1.0], 3, Some("conversation"))
-            .expect("knn conv");
-        assert_eq!(conv.len(), 1);
-        assert_eq!(conv[0].conv_id, "conv-x");
+    #[test]
+    fn dimension_change_requires_explicit_rebuild() {
+        let store = VecStore::open_in_memory().unwrap();
+        store
+            .replace_source(3, "github", &[chunk("a", &[1.0, 0.0, 0.0], "a.rs", "code")])
+            .unwrap();
+        assert!(store
+            .replace_source(2, "slack", &[chunk("b", &[1.0, 0.0], "", "conversation")])
+            .is_err());
+        assert_eq!(store.count(), 1);
     }
 }

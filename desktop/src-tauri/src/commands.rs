@@ -17,7 +17,7 @@ use crate::github::{self, Repo};
 use crate::inference::{self, ChatMessage, ChatOptions, StreamEvent};
 use crate::oauth;
 use crate::slack::{self, SlackChannel};
-use crate::vecstore::{Hit, VecStore};
+use crate::vecstore::{Hit, IndexedChunk, VecStore};
 
 /// Shared application state held by Tauri.
 pub struct AppState {
@@ -270,6 +270,32 @@ pub struct Chunk {
     pub conv_id: Option<String>,
 }
 
+/// Stable, dependency-free FNV-1a identity for a chunk within a source.  The
+/// source namespace is stored separately; these fields distinguish a remote
+/// record/path and make changed content produce a new identity.
+fn stable_chunk_id(chunk: &Chunk) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    let line_start = chunk.line_start.to_string();
+    for field in [
+        chunk.path.as_deref().unwrap_or(""),
+        &chunk.kind,
+        &line_start,
+        chunk.conv_id.as_deref().unwrap_or(""),
+        &chunk.text,
+    ] {
+        for byte in field
+            .as_bytes()
+            .iter()
+            .copied()
+            .chain(std::iter::once(0xff))
+        {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    format!("{hash:016x}")
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct IndexStatus {
     pub indexed: bool,
@@ -296,13 +322,14 @@ pub async fn index_status(state: State<'_, AppState>) -> Result<IndexStatus, App
     })
 }
 
-/// Embed a set of chunks (documents prefixed for nomic) and (re)build the vec0
-/// index. All embedding happens in Rust via the resolved embedding target
+/// Embed a set of chunks (documents prefixed for nomic) and atomically replace
+/// just one source in the shared vec0 index. All embedding happens in Rust via the resolved embedding target
 /// (loopback for local). `on_progress(done, total)` is called after each batch
 /// so callers can surface progress; pass a no-op when unused. Shared by
 /// `build_index` and `github_index_repo` so the embed/index logic lives once.
 async fn embed_and_index<F: FnMut(usize, usize)>(
     state: &AppState,
+    source_id: &str,
     chunks: &[Chunk],
     mut on_progress: F,
 ) -> Result<IndexStatus, AppError> {
@@ -339,17 +366,21 @@ async fn embed_and_index<F: FnMut(usize, usize)>(
         .filter(|d| *d > 0)
         .ok_or_else(|| AppError::embedding("Embedding engine returned empty vectors."))?;
 
-    vec.reset(dim)?;
-    for (i, (c, emb)) in chunks.iter().zip(embeddings.iter()).enumerate() {
-        vec.insert(
-            i as i64 + 1,
-            emb,
-            c.path.as_deref().unwrap_or(""),
-            &c.kind,
-            c.line_start,
-            c.conv_id.as_deref().unwrap_or(""),
-        )?;
-    }
+    let chunk_ids: Vec<String> = chunks.iter().map(stable_chunk_id).collect();
+    let indexed: Vec<IndexedChunk<'_>> = chunks
+        .iter()
+        .zip(embeddings.iter())
+        .zip(chunk_ids.iter())
+        .map(|((chunk, embedding), chunk_id)| IndexedChunk {
+            chunk_id,
+            embedding,
+            path: chunk.path.as_deref().unwrap_or(""),
+            kind: &chunk.kind,
+            line_start: chunk.line_start,
+            conv_id: chunk.conv_id.as_deref().unwrap_or(""),
+        })
+        .collect();
+    vec.replace_source(dim, source_id, &indexed)?;
 
     Ok(IndexStatus {
         indexed: true,
@@ -365,7 +396,7 @@ pub async fn build_index(
     state: State<'_, AppState>,
     chunks: Vec<Chunk>,
 ) -> Result<IndexStatus, AppError> {
-    embed_and_index(state.inner(), &chunks, |_, _| {}).await
+    embed_and_index(state.inner(), "manual", &chunks, |_, _| {}).await
 }
 
 /// Embed `query` (prefixed for nomic) and return the K nearest chunks, optionally
@@ -977,18 +1008,23 @@ async fn github_index_repo_inner(
     }
 
     let ev = on_event.clone();
-    let status = embed_and_index(state, &chunks, move |done, total| {
-        let fraction = if total > 0 {
-            done as f64 / total as f64
-        } else {
-            0.0
-        };
-        let _ = ev.send(IndexEvent::Progress {
-            done,
-            total,
-            fraction,
-        });
-    })
+    let status = embed_and_index(
+        state,
+        &format!("github:{}", full_name.to_ascii_lowercase()),
+        &chunks,
+        move |done, total| {
+            let fraction = if total > 0 {
+                done as f64 / total as f64
+            } else {
+                0.0
+            };
+            let _ = ev.send(IndexEvent::Progress {
+                done,
+                total,
+                fraction,
+            });
+        },
+    )
     .await?;
 
     let _ = on_event.send(IndexEvent::Done {
@@ -1260,7 +1296,7 @@ async fn slack_index_inner(
     }
 
     let ev = on_event.clone();
-    let status = embed_and_index(state, &chunks, move |done, total| {
+    let status = embed_and_index(state, "slack", &chunks, move |done, total| {
         let fraction = if total > 0 {
             done as f64 / total as f64
         } else {
@@ -1523,7 +1559,7 @@ async fn email_index_inner(
     }
 
     let ev = on_event.clone();
-    let status = embed_and_index(state, &chunks, move |done, total| {
+    let status = embed_and_index(state, source, &chunks, move |done, total| {
         let fraction = if total > 0 {
             done as f64 / total as f64
         } else {
