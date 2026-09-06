@@ -1,7 +1,4 @@
-"use client";
-
 import Link from "next/link";
-import { motion } from "motion/react";
 
 import { cn } from "@/lib/utils";
 import { buttonVariants } from "@/components/ui/button";
@@ -38,11 +35,8 @@ function AnnouncementBar() {
 /** Sticky, white Benchling-style top navigation for the landing page. */
 export function LandingNav() {
   return (
-    <motion.header
-      initial={{ y: -24, opacity: 0 }}
-      animate={{ y: 0, opacity: 1 }}
-      transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-      className="sticky top-0 z-50 w-full border-b border-border bg-background/85 backdrop-blur-xl supports-[backdrop-filter]:bg-background/70"
+    <header
+      className="sticky top-0 z-50 w-full border-b border-border bg-background/85 backdrop-blur-xl supports-[backdrop-filter]:bg-background/70 animate-in fade-in slide-in-from-top-6 duration-700"
     >
       <AnnouncementBar />
       <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-5 sm:px-8">
@@ -83,6 +77,6 @@ export function LandingNav() {
           </Link>
         </div>
       </nav>
-    </motion.header>
+    </header>
   );
 }

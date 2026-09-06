@@ -1,10 +1,9 @@
-"use client";
-
 import { Clock, FileCode2, MessagesSquare, Users } from "lucide-react";
 
 import { LibbieAvatar } from "@/components/LibbieAvatar";
 import { libbie, proactiveNudge, pipeline } from "@/lib/data";
-import { Reveal, SectionHeading } from "@/components/landing/reveal";
+import { Reveal } from "@/components/landing/reveal";
+import { SectionHeading } from "@/components/landing/section-heading";
 
 const TRAITS: { icon: React.ReactNode; title: string; body: string }[] = [
   {

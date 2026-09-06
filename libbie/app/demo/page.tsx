@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { motion, AnimatePresence } from "motion/react";
+import dynamic from "next/dynamic";
+import { m as motion, AnimatePresence } from "motion/react";
 import Link from "next/link";
 import { Command, PanelLeftOpen, ArrowLeft, PanelLeft } from "lucide-react";
 
@@ -22,9 +23,21 @@ import { ReadingIntro } from "@/components/demo/ReadingIntro";
 import { PipelineRail } from "@/components/demo/PipelineRail";
 import { CodeCanvas, refToFocus, type CanvasFocus } from "@/components/demo/CodeCanvas";
 import { LibbieRail, LibbieOrb } from "@/components/demo/LibbieRail";
-import { AskLibbie } from "@/components/demo/AskLibbie";
-import { RiskPanel } from "@/components/demo/RiskPanel";
-import { HandoverDialog } from "@/components/demo/HandoverDialog";
+import { Toaster } from "@/components/ui/sonner";
+
+// Closed-by-default surfaces: split out of the first-load bundle entirely.
+const AskLibbie = dynamic(
+  () => import("@/components/demo/AskLibbie").then((m) => m.AskLibbie),
+  { ssr: false },
+);
+const RiskPanel = dynamic(
+  () => import("@/components/demo/RiskPanel").then((m) => m.RiskPanel),
+  { ssr: false },
+);
+const HandoverDialog = dynamic(
+  () => import("@/components/demo/HandoverDialog").then((m) => m.HandoverDialog),
+  { ssr: false },
+);
 
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -265,6 +278,10 @@ export default function DemoPage() {
           </div>
         </SheetContent>
       </Sheet>
+
+      {/* Toasts fire only from this route (e.g. the handover dialog); the
+          landing page never mounts a toaster. */}
+      <Toaster position="bottom-right" />
     </div>
   );
 }

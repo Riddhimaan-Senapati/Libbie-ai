@@ -1,10 +1,9 @@
-"use client";
-
 import { CheckCircle2, Lock, ServerCog, ShieldCheck } from "lucide-react";
 
 import { LibbieAvatar } from "@/components/LibbieAvatar";
 import { localAnswer } from "@/lib/data";
-import { Reveal, SectionHeading } from "@/components/landing/reveal";
+import { Reveal } from "@/components/landing/reveal";
+import { SectionHeading } from "@/components/landing/section-heading";
 
 const GUARANTEES: string[] = [
   "Local models by default (llama.cpp, or vLLM on Linux + NVIDIA), with no network egress",

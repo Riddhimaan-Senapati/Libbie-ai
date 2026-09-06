@@ -1,12 +1,13 @@
 "use client";
 
-import { motion, type Variants } from "motion/react";
+import { m as motion, type Variants } from "motion/react";
 import { FileCode2, MessagesSquare, Quote, Plus } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { LibbieAvatar } from "@/components/LibbieAvatar";
 import { getAnswer, getConversation, getCodeFile } from "@/lib/data";
-import { Reveal, SectionHeading } from "@/components/landing/reveal";
+import { Reveal } from "@/components/landing/reveal";
+import { SectionHeading } from "@/components/landing/section-heading";
 
 // Ground the trust backbone in the real GRCh37 reference-build example.
 const ANSWER = getAnswer("ans-grch37");

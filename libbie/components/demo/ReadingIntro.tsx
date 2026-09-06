@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { motion } from "motion/react";
+import { m as motion } from "motion/react";
 
 import { pipeline } from "@/lib/data";
 import { LibbieAvatar } from "@/components/LibbieAvatar";
