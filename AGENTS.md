@@ -73,6 +73,10 @@ npm run build                                  # runs tsc --noEmit then the bund
 merge into a feature branch, re-run all of them. **Wait for the PR's CI to go green before merging**
 (merging while "unstable" put a red build on `main` once).
 
+CI's stable can be newer than a dev machine's, and new clippy versions add lints. If clippy passes
+locally but fails in CI, run `rustup update stable` and re-run the gates before changing any code.
+This exact gap once hid a `while_let_loop` finding that CI's 1.98 caught and a local 1.93 accepted.
+
 ## Conventions (do these the way the codebase already does)
 
 - **Permissive licenses only** (MIT / BSD / Apache-2.0). No GPL/AGPL/LGPL/BUSL/SSPL. Before adding a
