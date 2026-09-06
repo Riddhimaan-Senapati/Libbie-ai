@@ -2,7 +2,7 @@
 
 import { useEffect, useReducer, useRef } from "react";
 import Link from "next/link";
-import { motion, AnimatePresence, type Variants } from "motion/react";
+import { m as motion, AnimatePresence, useInView, type Variants } from "motion/react";
 import { ArrowRight, FileCode2, MessagesSquare, CornerDownLeft, Plus } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -127,8 +127,13 @@ function AskLibbieDemo() {
   const question = ANSWER?.question ?? "Why was this pipeline built on GRCh37 instead of GRCh38?";
   const [state, dispatch] = useReducer(reducer, { cycle: 0, phase: "typing", typed: 0 });
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // The loop runs forever; freeze it while the hero is off-screen so a
+  // background tab stops scheduling a dispatch every 38 ms.
+  const sectionRef = useRef<HTMLDivElement>(null);
+  const inView = useInView(sectionRef, { margin: "-80px" });
 
   useEffect(() => {
+    if (!inView) return;
     const t = timers.current;
     if (state.phase === "typing") {
       if (state.typed < question.length) {
@@ -146,12 +151,12 @@ function AskLibbieDemo() {
       t.forEach(clearTimeout);
       timers.current = [];
     };
-  }, [state.phase, state.typed, question.length]);
+  }, [state.phase, state.typed, question.length, inView]);
 
   const showAnswer = state.phase === "answer";
 
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-border bg-card shadow-xl">
+    <div ref={sectionRef} className="relative overflow-hidden rounded-2xl border border-border bg-card shadow-xl">
       <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-code via-primary to-conversation" aria-hidden />
 
       {/* Window chrome */}

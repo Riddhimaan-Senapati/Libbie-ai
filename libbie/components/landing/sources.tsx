@@ -1,8 +1,7 @@
-"use client";
-
 import { GitBranch, Mail, MessagesSquare } from "lucide-react";
 
-import { Reveal, SectionHeading } from "@/components/landing/reveal";
+import { Reveal } from "@/components/landing/reveal";
+import { SectionHeading } from "@/components/landing/section-heading";
 
 const SOURCES: { icon: React.ReactNode; title: string; body: string }[] = [
   {
@@ -61,6 +60,8 @@ export function Sources() {
                 alt="Libbie desktop settings showing the Hugging Face model download, Connect GitHub, and Slack connectors."
                 width={1262}
                 height={568}
+                loading="lazy"
+                decoding="async"
                 className="w-full"
               />
             </div>

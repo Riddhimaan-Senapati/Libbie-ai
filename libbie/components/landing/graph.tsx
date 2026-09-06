@@ -1,6 +1,5 @@
-"use client";
-
-import { Reveal, SectionHeading } from "@/components/landing/reveal";
+import { Reveal } from "@/components/landing/reveal";
+import { SectionHeading } from "@/components/landing/section-heading";
 
 const KINDS: { label: string; dot: string }[] = [
   { label: "Code & files", dot: "bg-code" },
@@ -46,6 +45,8 @@ export function GraphSection() {
                 alt="Libbie's provenance graph: colored nodes for files, messages, decisions, and parameters, joined by solid committed edges and dashed inferred edges."
                 width={1262}
                 height={568}
+                loading="lazy"
+                decoding="async"
                 className="w-full"
               />
             </div>

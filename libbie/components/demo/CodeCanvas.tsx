@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { motion } from "motion/react";
 import { FileCode2, AlertTriangle } from "lucide-react";
 
 import { getCodeFile, staleness } from "@/lib/data";
@@ -19,16 +18,32 @@ export interface CanvasFocus {
   nonce: number;
 }
 
-/** Inline staleness hints keyed by a substring that appears on a file line. */
+/**
+ * Inline staleness hints on canvas lines. The labels derive from the staleness
+ * fixture (single source of truth, shared with the risk panel), so "X available"
+ * can't drift from the version the risk panel reports. The regexes anchor on
+ * the demo files' own content.
+ */
+const HINT_LABEL_OVERRIDES: Record<string, string> = {
+  // The fixture carries the version, not the end-of-life judgment.
+  Python: "EOL · 3.12 current",
+};
+
+function hintLabel(itemName: string): string {
+  const it = staleness.find((s) => s.name === itemName);
+  if (!it) return "";
+  return HINT_LABEL_OVERRIDES[itemName] ?? `${it.current.split(" ")[0]} available`;
+}
+
 const STALE_HINTS: { match: RegExp; label: string }[] = [
-  { match: /genome\s*=\s*'GRCh37'/, label: "GRCh38 available" },
-  { match: /gatk_version\s*=\s*'4\.1\.9\.0'/, label: "4.6.1.0 available" },
-  { match: /gatk4=4\.1\.9\.0/, label: "4.6.1.0 available" },
-  { match: /bwa=0\.7\.17/, label: "0.7.18 available" },
-  { match: /samtools=1\.10/, label: "1.21 available" },
-  { match: /bcftools=1\.10\.2/, label: "1.21 available" },
-  { match: /picard=2\.23\.8/, label: "3.3.0 available" },
-  { match: /python=3\.8/, label: "EOL · 3.12 current" },
+  { match: /genome\s*=\s*'GRCh37'/, label: hintLabel("Reference build") },
+  { match: /gatk_version\s*=\s*'4\.1\.9\.0'/, label: hintLabel("GATK") },
+  { match: /gatk4=/, label: hintLabel("GATK") },
+  { match: /bwa=/, label: hintLabel("BWA") },
+  { match: /samtools=/, label: hintLabel("samtools") },
+  { match: /bcftools=/, label: hintLabel("bcftools") },
+  { match: /picard=/, label: hintLabel("Picard") },
+  { match: /python=/, label: hintLabel("Python") },
 ];
 
 function staleHint(line: string): string | null {
@@ -93,25 +108,15 @@ export function CodeCanvas({
               const hint = staleHint(line);
 
               return (
-                <motion.div
-                  key={lineNo}
+                <div
+                  key={isFirstCited ? `cited-${activeFocus!.nonce}` : lineNo}
                   ref={isFirstCited ? lineRef : undefined}
                   onClick={() => onLineClick?.({ path: file.path, line: lineNo })}
                   className={cn(
                     "group flex cursor-pointer px-4 transition-colors hover:bg-foreground/[0.03]",
                     cited && "bg-code/15 shadow-[inset_2px_0_0_var(--code)]",
+                    isFirstCited && "animate-cite-flash",
                   )}
-                  animate={
-                    isFirstCited
-                      ? {
-                          backgroundColor: [
-                            "color-mix(in oklch, var(--code) 38%, transparent)",
-                            "color-mix(in oklch, var(--code) 15%, transparent)",
-                          ],
-                        }
-                      : undefined
-                  }
-                  transition={{ duration: 1.1, ease: "easeOut" }}
                 >
                   <span
                     className={cn(
@@ -139,7 +144,7 @@ export function CodeCanvas({
                       {hint}
                     </span>
                   )}
-                </motion.div>
+                </div>
               );
             })}
           </code>

@@ -12,7 +12,8 @@ stack is the main plan (`../docs/main_plan.md`).
 
 ## Stack
 Next.js 16 (App Router) · React 19 · TypeScript · Tailwind v4 · shadcn/ui (base-ui) ·
-motion · recharts · lucide-react.
+`motion` via LazyMotion (domAnimation feature set) · lucide-react. Seven landing sections are
+server components; the client islands are the scroll reveal, the hero micro-demo, and the demo.
 
 ## Run
 ```bash
@@ -22,15 +23,16 @@ npm run build    # production build
 ```
 
 ## Routes
-- `/` — public landing page (problem → fusion → how-it-works → on-prem → pricing).
-- `/demo` — the live demo: scanning intro → magic-moment workspace (dual citations,
+- `/` — public landing page (problem → fusion → sources → graph → on-prem → pricing).
+- `/demo` — the live demo: reading intro → magic-moment workspace (dual citations,
   technical/executive toggle, click-to-source), risk & staleness panel, handover export,
   freemium counter, local/air-gapped mode toggle.
 
 ## Where things live
 - `lib/types.ts` — the data contract. `lib/data.ts` — single import surface + helpers.
-- `lib/fixtures/*` — hero genomics pipeline, synthetic conversations, precomputed link
-  map, dual-cited answers, staleness data.
+- `lib/fixtures/*` — thin re-exports of `../shared/demo-data/fixtures/`, the single source of
+  truth shared with the desktop: hero genomics pipeline, synthetic conversations, dual-cited
+  answers, staleness data.
 - `components/landing/*` — landing sections. `components/demo/*` — the demo app.
 - `CONTRACT.md` — the build contract (design system + data API) used to build the UI.
 

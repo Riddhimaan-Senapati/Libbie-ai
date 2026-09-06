@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Hanken_Grotesk, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
-import { Toaster } from "@/components/ui/sonner";
+import { MotionProvider } from "@/components/motion-provider";
 
 const hanken = Hanken_Grotesk({
   variable: "--font-hanken",
@@ -30,8 +30,7 @@ export default function RootLayout({
       className={`${hanken.variable} ${jetbrainsMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">
-        {children}
-        <Toaster position="bottom-right" />
+        <MotionProvider>{children}</MotionProvider>
       </body>
     </html>
   );

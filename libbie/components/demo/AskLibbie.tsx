@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { motion, AnimatePresence } from "motion/react";
+import { m as motion, AnimatePresence } from "motion/react";
 import { Search, CornerDownLeft, Sparkles } from "lucide-react";
 
 import { answers } from "@/lib/data";

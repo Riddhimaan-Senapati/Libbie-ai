@@ -4,11 +4,10 @@
 import { pipeline } from "@/lib/fixtures/pipeline";
 import { conversations } from "@/lib/fixtures/conversations";
 import { answers } from "@/lib/fixtures/answers";
-import { linkMap } from "@/lib/fixtures/linkmap";
 import { staleness, scanItems } from "@/lib/fixtures/staleness";
-import type { Answer, CodeFile, Conversation, LinkEdge } from "@/lib/types";
+import type { Answer, CodeFile, Conversation } from "@/lib/types";
 
-export { pipeline, conversations, answers, linkMap, staleness, scanItems };
+export { pipeline, conversations, answers, staleness, scanItems };
 
 export const getConversation = (id: string): Conversation | undefined =>
   conversations.find((c) => c.id === id);
@@ -18,14 +17,6 @@ export const getAnswer = (id: string): Answer | undefined =>
 
 export const getCodeFile = (path: string): CodeFile | undefined =>
   pipeline.files.find((f) => f.path === path);
-
-/** All link edges whose code side lives in the given file. */
-export const getLinksForFile = (path: string): LinkEdge[] =>
-  linkMap.filter((e) => e.code.path === path);
-
-/** All link edges pointing at a conversation. */
-export const getLinksForConversation = (conversationId: string): LinkEdge[] =>
-  linkMap.filter((e) => e.conversationId === conversationId);
 
 /** The single answer wired to the real local / air-gapped path (FR-14). */
 export const localAnswer = (): Answer | undefined => answers.find((a) => a.isLocal);

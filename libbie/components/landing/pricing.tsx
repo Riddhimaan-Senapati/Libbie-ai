@@ -1,9 +1,8 @@
-"use client";
-
 import { Check, Sparkles } from "lucide-react";
 
 import { freemium } from "@/lib/data";
-import { Reveal, SectionHeading } from "@/components/landing/reveal";
+import { Reveal } from "@/components/landing/reveal";
+import { SectionHeading } from "@/components/landing/section-heading";
 
 const FREE_FEATURES: string[] = [
   `${freemium.limit} questions answered / month`,

@@ -2,16 +2,6 @@
 
 import * as React from "react";
 import {
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Cell,
-  Tooltip as RechartsTooltip,
-  LabelList,
-} from "recharts";
-import {
   AlertTriangle,
   ArrowRight,
   Dna,
@@ -91,78 +81,39 @@ function SeverityChart({ items }: { items: StalenessItem[] }) {
     [items],
   );
 
+  // A fixed-domain (0-3) three-bar chart hand-rolled as styled rows; recharts
+  // cost a 500 KB chunk for this one visual.
   return (
     <div className="h-[260px] w-full" aria-hidden>
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart
-          layout="vertical"
-          data={data}
-          margin={{ top: 4, right: 76, bottom: 4, left: 4 }}
-          barCategoryGap={6}
-        >
-          <XAxis type="number" domain={[0, 3]} hide />
-          <YAxis
-            type="category"
-            dataKey="name"
-            width={96}
-            tickLine={false}
-            axisLine={false}
-            tick={{
-              fill: "var(--muted-foreground)",
-              fontSize: 11,
-              fontFamily: "var(--font-mono)",
-            }}
-          />
-          <RechartsTooltip
-            cursor={{ fill: "color-mix(in oklch, var(--foreground) 5%, transparent)" }}
-            content={({ active, payload }) => {
-              if (!active || !payload?.length) return null;
-              const d = payload[0].payload as ChartDatum;
-              return (
-                <div className="rounded-lg border border-border bg-popover px-3 py-2 text-xs shadow-lg">
-                  <div className="mb-1 font-mono font-medium text-foreground">{d.name}</div>
-                  <div className="font-mono text-muted-foreground">
-                    {d.pinned} <span className="opacity-60">→</span> {d.current}
-                  </div>
-                  <div className="mt-1" style={{ color: statusColor(d.status) }}>
-                    {STATUS_META[d.status].label}
-                  </div>
-                </div>
-              );
-            }}
-          />
-          <Bar dataKey="weight" radius={[3, 3, 3, 3]} barSize={14} isAnimationActive>
-            {data.map((d) => (
-              <Cell key={d.name} fill={statusColor(d.status)} fillOpacity={0.85} />
-            ))}
-            <LabelList
-              dataKey="status"
-              position="right"
-              content={(props) => {
-                const { x, y, width, height, value } = props as {
-                  x: number;
-                  y: number;
-                  width: number;
-                  height: number;
-                  value: StalenessStatus;
-                };
-                return (
-                  <text
-                    x={x + width + 6}
-                    y={y + height / 2}
-                    dominantBaseline="central"
-                    fontSize={10}
-                    fontFamily="var(--font-mono)"
-                    fill={statusColor(value)}
-                  >
-                    {STATUS_META[value].label}
-                  </text>
-                );
-              }}
-            />
-          </Bar>
-        </BarChart>
-      </ResponsiveContainer>
+      <ul className="flex h-full flex-col justify-around gap-1.5">
+        {data.map((d) => (
+          <li
+            key={d.name}
+            className="flex min-w-0 items-center gap-2 text-[11px]"
+            title={`${d.pinned} → ${d.current} · ${STATUS_META[d.status].label}`}
+          >
+            <span className="w-24 shrink-0 truncate font-mono text-muted-foreground">
+              {d.name}
+            </span>
+            <span className="relative h-3.5 min-w-0 flex-1">
+              <span
+                className="absolute inset-y-0 left-0 rounded-[3px]"
+                style={{
+                  width: `${(d.weight / 3) * 100}%`,
+                  backgroundColor: statusColor(d.status),
+                  opacity: 0.85,
+                }}
+              />
+            </span>
+            <span
+              className="w-16 shrink-0 font-mono text-[10px]"
+              style={{ color: statusColor(d.status) }}
+            >
+              {STATUS_META[d.status].label}
+            </span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
