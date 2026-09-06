@@ -40,6 +40,9 @@ from ..models import (
     Provenance,
     make_id,
 )
+from ..textutil import min_dt as _min_dt
+from ..textutil import naive as _as_naive
+from ..textutil import trim as _trim
 
 # Decision-bearing language: threads without any of these are not turned into Decisions.
 _DECISION_CUES = re.compile(
@@ -165,8 +168,14 @@ def derive_decisions(graph: Graph) -> tuple[list[Decision], list[Edge]]:
         # Statement: the first substantive (decision-cue-bearing) message.
         stmt_msg = next((m for m in msgs_sorted if _DECISION_CUES.search(m.text)), msgs_sorted[0])
         participants = sorted({m.author for m in msgs if m.author})
+        # A decision quotes its whole thread; cap each span so a pathological
+        # message can't balloon the graph (the Message node keeps the full text).
         spans = [
-            EvidenceSpan(artifact=m.id, locator=f"msg {m.ts.isoformat() if m.ts else '?'}", quote=m.text)
+            EvidenceSpan(
+                artifact=m.id,
+                locator=f"msg {m.ts.isoformat() if m.ts else '?'}",
+                quote=m.text[:2000],
+            )
             for m in msgs_sorted
         ]
         did = make_id("decision", key)
@@ -216,16 +225,23 @@ def _cand_param_justified_by_decision(graph: Graph, days: int) -> list[Edge]:
         for pid in jr.params:
             jobruns_for_param.setdefault(pid, []).append(jr)
 
+    # Per-decision text is scanned by every param; lower it once here.
+    dec_texts: list[tuple[Decision, str, str]] = []
+    for d in decisions:
+        hay = " \n".join(s.quote or "" for s in d.evidence_spans) + " " + d.statement
+        dec_texts.append((d, hay.lower(), _loose_key(hay)))
+
     for p in params:
         needles = _value_needles(p.value)
-        for d in decisions:
-            hay = " \n".join(s.quote or "" for s in d.evidence_spans) + " " + d.statement
-            hits = [n for n in needles if n and n.lower() in hay.lower()]
+        needles_l = [n.lower() for n in needles]
+        key_lk = _loose_key(p.key) if p.key else ""
+        for d, hay_l, hay_lk in dec_texts:
+            hits = [n for n, nl in zip(needles, needles_l) if nl in hay_l]
             if not hits:
                 continue
             prior = _value_match_prior(hits)
             # key token bonus (e.g. "min-base-quality-score" mentioned)
-            if p.key and _loose_key(p.key) in _loose_key(hay):
+            if key_lk and key_lk in hay_lk:
                 prior = min(0.95, prior + 0.1)
             # time locality bonus
             if _time_local(jobruns_for_param.get(p.id, []), d, days):
@@ -249,7 +265,7 @@ def _cand_output_path_identity(graph: Graph) -> list[Edge]:
     """path identity: JobRun output paths -> File(output) [wrote], and that output
     file -> any Claim citing its basename [appears_in]."""
     out: list[Edge] = []
-    claims = [c for c in graph.nodes_of("claim") if isinstance(c, Claim)]
+    claims_l = [(c, c.statement.lower()) for c in graph.nodes_of("claim") if isinstance(c, Claim)]
     files_by_path = {f.path: f for f in graph.nodes_of("file") if isinstance(f, File)}
 
     for jr in graph.nodes_of("job_run"):
@@ -266,13 +282,15 @@ def _cand_output_path_identity(graph: Graph) -> list[Edge]:
                 confidence=0.95, status=EdgeStatus.committed, generator="ingest:job-output",
                 rationale="Output path recorded in the job log.",
             ))
-            for c in claims:
-                if _path_cited(path, c.statement):
+            base = os.path.basename(path)
+            base_l = base.lower()
+            for c, t in claims_l:
+                if _cites(base_l, t):
                     out.append(Edge.make(
                         f.id, c.id, EdgeType.appears_in,
                         confidence=0.9, status=EdgeStatus.hypothesis,
                         generator="candidate:path-identity",
-                        rationale=f"Claim cites output file {os.path.basename(path)!r}.",
+                        rationale=f"Claim cites output file {base!r}.",
                         evidence_spans=[EvidenceSpan(artifact=c.id, quote=c.statement)],
                     ))
     return out
@@ -284,14 +302,18 @@ def _cand_finding_supported_by_jobrun(graph: Graph) -> list[Edge]:
     findings = [f for f in graph.nodes_of("finding") if isinstance(f, Finding)]
     claims = [c for c in graph.nodes_of("claim") if isinstance(c, Claim)]
     jobruns = [j for j in graph.nodes_of("job_run") if isinstance(j, JobRun)]
+    claims_l = [(c, c.statement.lower()) for c in claims]
     for fnd in findings:
         # Only consider claims from the finding's OWN paper -- otherwise a run
         # whose output is cited by any unrelated paper gets falsely linked.
-        paper_claims = [c for c in claims if _same_paper(fnd, c)]
+        paper_claims = [(c, t) for c, t in claims_l if _same_paper(fnd, c)]
+        if not paper_claims:
+            continue
         for jr in jobruns:
             cited = next(
                 (os.path.basename(p) for p in jr.output_paths
-                 for c in paper_claims if _path_cited(p, c.statement)),
+                 for c, t in paper_claims
+                 if _cites(os.path.basename(p), t)),
                 None,
             )
             if cited:
@@ -309,18 +331,22 @@ def _cand_claim_evidences_finding(graph: Graph) -> list[Edge]:
     """Within a paper, each Claim is a candidate to evidence that paper's Finding."""
     out: list[Edge] = []
     # map paper -> its finding(s) via shared provenance path
-    findings = [f for f in graph.nodes_of("finding") if isinstance(f, Finding)]
+    findings_by_path: dict[str, list[Finding]] = {}
+    for fnd in graph.nodes_of("finding"):
+        if isinstance(fnd, Finding) and fnd.provenance and fnd.provenance.path:
+            findings_by_path.setdefault(fnd.provenance.path, []).append(fnd)
     claims = [c for c in graph.nodes_of("claim") if isinstance(c, Claim)]
     for c in claims:
-        for fnd in findings:
-            if _same_paper(c, fnd):
-                out.append(Edge.make(
-                    c.id, fnd.id, EdgeType.evidences,
-                    confidence=0.7, status=EdgeStatus.hypothesis,
-                    generator="candidate:same-document",
-                    rationale="Claim and finding are from the same paper.",
-                    evidence_spans=[EvidenceSpan(artifact=c.id, quote=c.statement)],
-                ))
+        if not (c.provenance and c.provenance.path):
+            continue
+        for fnd in findings_by_path.get(c.provenance.path, []):
+            out.append(Edge.make(
+                c.id, fnd.id, EdgeType.evidences,
+                confidence=0.7, status=EdgeStatus.hypothesis,
+                generator="candidate:same-document",
+                rationale="Claim and finding are from the same paper.",
+                evidence_spans=[EvidenceSpan(artifact=c.id, quote=c.statement)],
+            ))
     return out
 
 
@@ -330,22 +356,26 @@ def _cand_jobrun_ran_commit(graph: Graph) -> list[Edge]:
     out: list[Edge] = []
     steps = {s.id: s for s in graph.nodes_of("pipeline_step") if isinstance(s, PipelineStep)}
     commits = [c for c in graph.nodes_of("commit") if isinstance(c, Commit)]
+    entry_bases = {
+        os.path.basename(s.entrypoint) for s in steps.values() if s.entrypoint
+    }
+    commit_pre = [
+        (c, {os.path.basename(t) for t in c.touched_files}, _as_naive(c.ts))
+        for c in commits
+    ]
     for jr in graph.nodes_of("job_run"):
         assert isinstance(jr, JobRun)
-        entry_bases = {
-            os.path.basename(s.entrypoint) for s in steps.values() if s.entrypoint
-        }
         best: Optional[Commit] = None
+        best_cts = None
         submit = _as_naive(jr.submit_ts)
-        for c in commits:
-            touched = {os.path.basename(t) for t in c.touched_files}
+        for c, touched, cts in commit_pre:
             if entry_bases & touched:
-                cts = _as_naive(c.ts)
                 # tz-safe: git commit ts is tz-aware, SLURM submit ts is naive.
                 if submit and cts and cts > submit:
                     continue  # commit is after the run -> not the state that ran
-                if best is None or (cts and _as_naive(best.ts) and cts > _as_naive(best.ts)):
+                if best is None or (cts and best_cts and cts > best_cts):
                     best = c
+                    best_cts = cts
         if best:
             # Repo-state-at-submit (latest commit touching the entrypoint at or
             # before submit) is a strong provenance signal; the time filter above
@@ -409,21 +439,6 @@ def _cand_jobrun_produced_by_step(graph: Graph) -> list[Edge]:
 # --------------------------------------------------------------------------- #
 # small helpers
 # --------------------------------------------------------------------------- #
-def _min_dt():
-    from datetime import datetime
-    return datetime.min
-
-
-def _as_naive(dt):
-    """Drop tzinfo so naive (SLURM ISO) and aware (Slack epoch) timestamps compare."""
-    return dt.replace(tzinfo=None) if dt is not None and dt.tzinfo is not None else dt
-
-
-def _trim(s: str, n: int) -> str:
-    s = " ".join(s.split())
-    return s if len(s) <= n else s[: n - 1] + "…"
-
-
 def _loose_key(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", s.lower())
 
@@ -469,19 +484,14 @@ def _first_quote_containing(d: Decision, needle: str) -> str:
     return _trim(d.statement, 240)
 
 
-def _paths_in(text: str) -> list[str]:
-    return re.findall(r"[\w./-]+\.\w{2,5}", text)
-
-
-def _path_cited(path: str, text: str) -> bool:
-    """True if `text` cites this output file -- by full basename (sample01.vcf) OR
-    by a distinctive stem (sample01), since papers often drop the extension."""
-    t = text.lower()
-    base = os.path.basename(path).lower()
-    if base and base in t:
+def _cites(base_l: str, text_l: str) -> bool:
+    """True if lowered `text_l` cites the output file with lowered basename
+    `base_l` -- by full basename (sample01.vcf) OR by a distinctive stem
+    (sample01), since papers often drop the extension."""
+    if base_l and base_l in text_l:
         return True
-    stem = os.path.splitext(base)[0]
-    return bool(stem and len(stem) >= 5 and re.search(rf"\b{re.escape(stem)}\b", t))
+    stem = os.path.splitext(base_l)[0]
+    return bool(stem and len(stem) >= 5 and re.search(rf"\b{re.escape(stem)}\b", text_l))
 
 
 def _same_paper(a, b) -> bool:

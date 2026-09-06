@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import re
 import shlex
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -384,8 +385,18 @@ def _is_sacct_file(path: Path) -> bool:
     return False
 
 
-def _parse_sacct(path: Path, store=None) -> list[JobRun]:
-    """Parse a pipe-delimited sacct dump into one :class:`JobRun` per primary row."""
+@dataclass
+class _SacctMeta:
+    """Sacct columns that guide assembly but don't belong on the JobRun model."""
+
+    job_name: Optional[str]
+    owner: Optional[str]
+    work_dir: Optional[str]
+
+
+def _parse_sacct(path: Path, store=None) -> list[tuple[JobRun, _SacctMeta]]:
+    """Parse a pipe-delimited sacct dump into one primary-row :class:`JobRun`
+    plus its source metadata, per row."""
     text = _read_text(path)
 
     prov_hash: Optional[str] = _sha1(text)
@@ -410,7 +421,7 @@ def _parse_sacct(path: Path, store=None) -> list[JobRun]:
         val = fields[idx].strip()
         return val or None
 
-    runs: list[JobRun] = []
+    runs: list[tuple[JobRun, _SacctMeta]] = []
     for line in lines[1:]:
         fields = [c.strip() for c in line.split("|")]
         job_id = _cell(fields, "JobID")
@@ -446,12 +457,7 @@ def _parse_sacct(path: Path, store=None) -> list[JobRun]:
             environment_status=EnvironmentStatus.unknown,
             provenance=provenance,
         )
-        # Stash the JobName + WorkDir on the run object transiently so the
-        # top-level assembler can match it to a script and owner.
-        run.__dict__["_job_name"] = _cell(fields, "JobName")
-        run.__dict__["_work_dir"] = work_dir
-        run.__dict__["_owner"] = owner
-        runs.append(run)
+        runs.append((run, _SacctMeta(job_name=_cell(fields, "JobName"), owner=owner, work_dir=work_dir)))
 
     return runs
 
@@ -461,9 +467,13 @@ def _parse_sacct(path: Path, store=None) -> list[JobRun]:
 # --------------------------------------------------------------------------- #
 
 class _LogInfo:
-    """Everything harvested from one job log, keyed later by job id."""
+    """Everything harvested from one job log, keyed later by job id.
 
-    __slots__ = ("job_id", "params", "output_paths", "build", "modules", "text", "path")
+    The raw log text is deliberately not kept here: it is persisted to the
+    artifact store inside ``_parse_log`` and only the extracted fields are read
+    by the assembler."""
+
+    __slots__ = ("job_id", "params", "output_paths", "build", "modules", "path")
 
     def __init__(
         self,
@@ -472,7 +482,6 @@ class _LogInfo:
         output_paths: list[str],
         build: Optional[str],
         modules: list[str],
-        text: str,
         path: Path,
     ) -> None:
         self.job_id = job_id
@@ -480,7 +489,6 @@ class _LogInfo:
         self.output_paths = output_paths
         self.build = build
         self.modules = modules
-        self.text = text
         self.path = path
 
 
@@ -572,7 +580,6 @@ def _parse_log(
         output_paths=output_paths,
         build=build,
         modules=modules,
-        text=text,
         path=path,
     )
 
@@ -664,12 +671,12 @@ def ingest_hpc(hpc_dir: str | Path = None, store=None) -> list[Node]:  # type: i
         nodes.extend(info.params)
 
     # -- 2. Accounting -> JobRun (primary rows only) ------------------------ #
-    runs: list[JobRun] = []
+    run_rows: list[tuple[JobRun, _SacctMeta]] = []
     for p in sacct_paths:
-        runs.extend(_parse_sacct(p, store=store))
+        run_rows.extend(_parse_sacct(p, store=store))
 
     # Index runs by job id so logs can attach to the right run.
-    runs_by_id: dict[str, JobRun] = {r.job_id: r for r in runs}
+    runs_by_id: dict[str, _SacctMeta] = {r.job_id: meta for r, meta in run_rows}
 
     # -- 3. Logs -> Params + Files, associated by job id -------------------- #
     # First pass: figure out which step each log's job belongs to (via the
@@ -680,13 +687,11 @@ def ingest_hpc(hpc_dir: str | Path = None, store=None) -> list[Node]:  # type: i
         m = _LOG_NAME_RE.search(p.name)
         step_ref: Optional[str] = None
         if m:
-            run = runs_by_id.get(m.group(1))
-            if run is not None:
-                job_name = run.__dict__.get("_job_name")
-                if job_name:
-                    info = by_name.get(str(job_name).lower())
-                    if info is not None:
-                        step_ref = info.step.id
+            meta = runs_by_id.get(m.group(1))
+            if meta is not None and meta.job_name:
+                info = by_name.get(str(meta.job_name).lower())
+                if info is not None:
+                    step_ref = info.step.id
         parsed = _parse_log(p, step_ref=step_ref, store=store)
         if parsed is not None:
             log_infos.append(parsed)
@@ -696,15 +701,11 @@ def ingest_hpc(hpc_dir: str | Path = None, store=None) -> list[Node]:  # type: i
     # -- 4. Assemble: enrich each JobRun and emit its Params/Files ---------- #
     emitted_files: set[str] = set()
 
-    for run in runs:
-        job_name = run.__dict__.get("_job_name")
-        owner = run.__dict__.get("_owner")
-        work_dir = run.__dict__.get("_work_dir")
-
+    for run, meta in run_rows:
         # Match this run to its job script (script_hash + build + modules).
         script_info: Optional[_ScriptInfo] = None
-        if job_name:
-            script_info = by_name.get(str(job_name).lower())
+        if meta.job_name:
+            script_info = by_name.get(str(meta.job_name).lower())
         if script_info is not None:
             run.script_hash = script_info.script_hash
 
@@ -751,24 +752,20 @@ def ingest_hpc(hpc_dir: str | Path = None, store=None) -> list[Node]:  # type: i
                     provenance=Provenance(
                         source="slurm",
                         path=(log_info.path.as_posix() if log_info is not None else None),
-                        actor=owner,
+                        actor=meta.owner,
                     ),
                 )
             )
 
         # Emit a Person node for the run owner (de-dup handled by person_node id).
-        if owner:
+        if meta.owner:
             nodes.append(
                 person_node(
                     source="slurm",
-                    handle=owner,
-                    path=work_dir,
+                    handle=meta.owner,
+                    path=meta.work_dir,
                 )
             )
-
-        # Clean the transient helper attributes off the pydantic object.
-        for key in ("_job_name", "_work_dir", "_owner"):
-            run.__dict__.pop(key, None)
 
         nodes.append(run)
 

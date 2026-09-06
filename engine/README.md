@@ -29,7 +29,8 @@ avoid the common copyleft traps in this problem space:
 | Task | We use (permissive) | We avoid (copyleft/restrictive) |
 |---|---|---|
 | PDF extraction | `pypdf` (BSD-3) | PyMuPDF/`fitz` (**AGPL-3.0**) |
-| git ingestion | `GitPython` (BSD-3) | `pygit2`/libgit2 (**GPL-2.0** w/ linking exception) |
+| git ingestion | `git` CLI via `subprocess` (one call for the whole walk) | `pygit2`/libgit2 (**GPL-2.0** w/ linking exception), GitPython (one subprocess per commit) |
+| JSON IO | `msgspec` (BSD-3) decode | orjson ≥3.12 (**MPL-2.0** fork; pin ≤3.11.4 or use msgspec) |
 | LLM client | `httpx` (BSD-3) direct | — |
 
 Model **weights** named in the plan carry their own terms: Qwen3 (Apache-2.0),
@@ -50,7 +51,7 @@ Every LLM call goes through `LLMBackend` (`complete`, `embed`). Flip `llm.backen
 
 ```bash
 cd engine
-python -m venv .venv && ./.venv/Scripts/pip install -e ".[dev,git]"
+python -m venv .venv && ./.venv/Scripts/pip install -e ".[dev]"
 cp config.example.yaml config.yaml          # default backend is `mock` (offline)
 
 # Build the graph from the bundled hero-scenario sample data, then brief it:
@@ -75,7 +76,7 @@ One-command health check (ingest → join → eval → briefing on the sample, o
 | `libbie eval` | Score committed edges against the hand-labelled gold set |
 | `libbie github login` | Authenticate to GitHub via OAuth device flow |
 | `libbie github repos` | List the repositories your account can access |
-| `libbie github ingest <owner/repo>` | Clone any accessible repo (incl. private/org) and ingest it into the graph |
+| `libbie github ingest <owner/repo>` | Clone any accessible repo (incl. private/org) and ingest it. Repeat runs fetch and reset the existing clone instead of re-downloading it |
 | `libbie slack {token,login,channels,ingest}` | Connect Slack (token paste or OAuth), list channels, ingest their history |
 | `libbie email {gmail,imap}` | Ingest Gmail (OAuth, read-only) or an IMAP mailbox (app password) |
 
@@ -102,7 +103,7 @@ private repos won't appear. Register the OAuth App once (device flow enabled) to
 Install the connector extras (permissive: `slack_sdk` MIT, `google-auth*` Apache; IMAP is stdlib):
 
 ```bash
-pip install -e ".[dev,git,connectors]"
+pip install -e ".[dev,connectors]"
 
 # Slack — paste a user token (xoxp-) or OAuth (needs a Slack app + fixed redirect port):
 libbie slack token                 # paste an xoxp- token, validated via auth.test
@@ -126,13 +127,15 @@ TLS. Tokens are stored via keyring (else a `0600` file) and never logged.
 libbie_engine/
 ├─ models.py         # typed nodes + edges + Graph (the shared contract)
 ├─ config.py         # section-7 YAML config
+├─ credentials.py    # shared connector token storage (keyring, else 0600 file)
+├─ textutil.py       # shared text/datetime helpers (tz-safe comparisons)
 ├─ llm/              # LLMBackend protocol + local / api / mock backends
-├─ store/            # raw artifact store + JSON graph store
+├─ store/            # raw artifact store (batched index flush) + JSON graph store
 ├─ ingest/           # one parser per artifact class
-├─ join/             # candidate generation → scoring → commit
+├─ join/             # candidate generation → scoring (threaded vs real backends) → commit
 ├─ briefing/         # the Inheritance Briefing generator
 ├─ lazarus.py        # environment_status executor (off-graph)
-├─ github.py         # OAuth device flow + safe clone + repo ingest
+├─ github.py         # OAuth device flow + safe clone/update + repo ingest
 ├─ evaluation.py     # edge-quality precision/recall vs the gold set
 └─ cli.py
 ```

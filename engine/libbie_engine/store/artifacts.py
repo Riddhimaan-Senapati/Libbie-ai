@@ -8,12 +8,18 @@ envelope: source, path, mtime, hash, actor)". Everything downstream can point an
 from __future__ import annotations
 
 import hashlib
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import msgspec
+
 from ..models import Provenance
+
+# Puts between index flushes. The index write is O(index), so flushing per put
+# makes bulk ingest quadratic; ingest calls ``put`` once per file, log, and
+# commit message.
+_FLUSH_EVERY = 100
 
 
 class ArtifactStore:
@@ -23,8 +29,20 @@ class ArtifactStore:
         self.blobs.mkdir(parents=True, exist_ok=True)
         self.index_path = self.root / "artifacts.json"
         self._index: dict[str, dict] = {}
+        self._dirty = 0
         if self.index_path.exists():
-            self._index = json.loads(self.index_path.read_text(encoding="utf-8"))
+            self._index = msgspec.json.decode(self.index_path.read_bytes())
+
+    def __enter__(self) -> "ArtifactStore":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Flush the index if there are uncommitted puts. Idempotent."""
+        if self._dirty:
+            self._flush()
 
     def put(
         self,
@@ -49,7 +67,9 @@ class ArtifactStore:
             "mtime": (mtime or datetime.now(timezone.utc)).isoformat(),
             "size": len(raw),
         }
-        self._flush()
+        self._dirty += 1
+        if self._dirty >= _FLUSH_EVERY:
+            self._flush()
         return aid
 
     def provenance(self, aid: str) -> Optional[Provenance]:
@@ -72,6 +92,7 @@ class ArtifactStore:
         return blob.read_bytes() if blob.exists() else None
 
     def _flush(self) -> None:
-        self.index_path.write_text(
-            json.dumps(self._index, indent=2, sort_keys=True), encoding="utf-8"
+        self.index_path.write_bytes(
+            msgspec.json.encode(self._index, order="deterministic")
         )
+        self._dirty = 0

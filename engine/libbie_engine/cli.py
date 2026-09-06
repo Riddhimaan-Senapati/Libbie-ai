@@ -12,6 +12,7 @@ from typing import Optional
 import typer
 
 from .config import Config
+from .credentials import load_token, save_token
 from .llm import build_backend
 from .store import ArtifactStore, GraphStore
 
@@ -41,6 +42,18 @@ def _store_root(cfg: Config) -> Path:
 def _stores(cfg: Config) -> tuple[ArtifactStore, GraphStore]:
     root = _store_root(cfg)
     return ArtifactStore(root), GraphStore(root)
+
+
+def _persist_nodes(gstore: GraphStore, nodes: list, note: str) -> None:
+    """Add ingested nodes to the stored graph, annotate environments, save."""
+    from .lazarus import annotate_environment
+
+    graph = gstore.load()
+    for n in nodes:
+        graph.add_node(n)
+    annotate_environment(graph)
+    gstore.save(graph)
+    typer.echo(f"Ingested {len(nodes)} nodes {note}Graph now has {len(graph.nodes)} nodes.")
 
 
 ConfigOpt = typer.Option(None, "--config", help="Path to config.yaml (default: engine/config.yaml).")
@@ -91,6 +104,7 @@ def ingest(
         except Exception as exc:  # keep other ingesters running
             typer.echo(f"  {label:<13} FAILED: {exc}", err=True)
 
+    store.close()
     annotate_environment(graph)
     gstore.save(graph)
     typer.echo(f"Ingested {added} nodes. Graph now has {len(graph.nodes)} nodes.")
@@ -202,7 +216,7 @@ def github_login(config: Optional[Path] = ConfigOpt) -> None:
         raise typer.Exit(1)
 
     cfg = _cfg(config)
-    gh.save_token(token, _store_root(cfg))
+    save_token("github", token, _store_root(cfg))
     typer.echo("Authenticated. Token stored securely (never logged).")
 
 
@@ -212,7 +226,7 @@ def github_repos(config: Optional[Path] = ConfigOpt) -> None:
     from . import github as gh
 
     cfg = _cfg(config)
-    token = gh.load_token(_store_root(cfg))
+    token = load_token("github", _store_root(cfg))
     if not token:
         typer.echo("Not authenticated. Run `libbie github login` first.", err=True)
         raise typer.Exit(1)
@@ -236,43 +250,35 @@ def github_ingest(
     config: Optional[Path] = ConfigOpt,
 ) -> None:
     """Clone owner/repo into the store, ingest its history, and save the graph."""
-    from . import github as gh
     from .ingest import ingest_git
-    from .lazarus import annotate_environment
 
     cfg = _cfg(config)
     store, gstore = _stores(cfg)
     root = _store_root(cfg)
 
-    token = gh.load_token(root)
+    token = load_token("github", root)
     if not token:
         typer.echo("Not authenticated. Run `libbie github login` first.", err=True)
         raise typer.Exit(1)
 
     # App-controlled clone destination under the store (validated repo -> safe name).
     dest = root / "github" / repo.replace("/", "__")
-    if dest.exists():
-        import shutil
-
-        shutil.rmtree(dest, ignore_errors=True)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        path = gh.clone_repo(repo, token, dest, rev=rev)
+        # Repeat ingests refresh the existing shallow clone instead of paying
+        # for a full re-download.
+        if (dest / ".git").exists():
+            path = gh.update_repo(repo, token, dest, rev=rev)
+        else:
+            path = gh.clone_repo(repo, token, dest, rev=rev)
     except (ValueError, gh.GitHubError) as exc:
         typer.echo(f"Clone failed: {exc}", err=True)
         raise typer.Exit(1)
 
-    graph = gstore.load()
     nodes = ingest_git(str(path), store=store)
-    for n in nodes:
-        graph.add_node(n)
-    annotate_environment(graph)
-    gstore.save(graph)
-    typer.echo(
-        f"Ingested {len(nodes)} nodes from {repo}. "
-        f"Graph now has {len(graph.nodes)} nodes."
-    )
+    store.close()
+    _persist_nodes(gstore, nodes, f"from {repo}. ")
 
 
 # --------------------------------------------------------------------------- #
@@ -304,7 +310,7 @@ def slack_token(
         raise typer.Exit(1)
 
     cfg = _cfg(config)
-    sl.save_token(token, _store_root(cfg))
+    save_token("slack", token, _store_root(cfg))
     typer.echo(
         f"Authenticated as {ident.get('user', '?')} on team "
         f"{ident.get('team', '?')}. Token stored securely (never logged)."
@@ -336,7 +342,7 @@ def slack_login(config: Optional[Path] = ConfigOpt) -> None:
         raise typer.Exit(1)
 
     cfg = _cfg(config)
-    sl.save_token(token, _store_root(cfg))
+    save_token("slack", token, _store_root(cfg))
     typer.echo("Authenticated. User token stored securely (never logged).")
 
 
@@ -346,7 +352,7 @@ def slack_channels(config: Optional[Path] = ConfigOpt) -> None:
     from . import slack as sl
 
     cfg = _cfg(config)
-    token = sl.load_token(_store_root(cfg))
+    token = load_token("slack", _store_root(cfg))
     if not token:
         typer.echo("Not authenticated. Run `libbie slack token` or `login`.", err=True)
         raise typer.Exit(1)
@@ -370,11 +376,10 @@ def slack_ingest(
 ) -> None:
     """Ingest conversations.history for the given channels and save the graph."""
     from . import slack as sl
-    from .lazarus import annotate_environment
 
     cfg = _cfg(config)
     _, gstore = _stores(cfg)
-    token = sl.load_token(_store_root(cfg))
+    token = load_token("slack", _store_root(cfg))
     if not token:
         typer.echo("Not authenticated. Run `libbie slack token` or `login`.", err=True)
         raise typer.Exit(1)
@@ -385,15 +390,7 @@ def slack_ingest(
         typer.echo(f"Slack ingest failed: {exc}", err=True)
         raise typer.Exit(1)
 
-    graph = gstore.load()
-    for n in nodes:
-        graph.add_node(n)
-    annotate_environment(graph)
-    gstore.save(graph)
-    typer.echo(
-        f"Ingested {len(nodes)} nodes from {len(channels)} channel(s). "
-        f"Graph now has {len(graph.nodes)} nodes."
-    )
+    _persist_nodes(gstore, nodes, f"from {len(channels)} channel(s). ")
 
 
 # --------------------------------------------------------------------------- #
@@ -416,7 +413,6 @@ def email_gmail(
 ) -> None:
     """OAuth to Gmail (readonly), ingest matching messages, and save the graph."""
     from . import email_ingest as em
-    from .lazarus import annotate_environment
 
     client_id = em.get_gmail_client_id()
     client_secret = em.get_gmail_client_secret()
@@ -442,12 +438,7 @@ def email_gmail(
 
     cfg = _cfg(config)
     _, gstore = _stores(cfg)
-    graph = gstore.load()
-    for n in nodes:
-        graph.add_node(n)
-    annotate_environment(graph)
-    gstore.save(graph)
-    typer.echo(f"Ingested {len(nodes)} nodes from Gmail. Graph now has {len(graph.nodes)} nodes.")
+    _persist_nodes(gstore, nodes, "from Gmail. ")
 
 
 @email_app.command("imap")
@@ -466,7 +457,6 @@ def email_imap(
 ) -> None:
     """Connect to an IMAP mailbox (app password), ingest it, and save the graph."""
     from . import email_ingest as em
-    from .lazarus import annotate_environment
 
     try:
         nodes = em.ingest_imap(
@@ -479,12 +469,7 @@ def email_imap(
 
     cfg = _cfg(config)
     _, gstore = _stores(cfg)
-    graph = gstore.load()
-    for n in nodes:
-        graph.add_node(n)
-    annotate_environment(graph)
-    gstore.save(graph)
-    typer.echo(f"Ingested {len(nodes)} nodes from IMAP. Graph now has {len(graph.nodes)} nodes.")
+    _persist_nodes(gstore, nodes, "from IMAP. ")
 
 
 def main() -> None:

@@ -15,24 +15,22 @@ authors = [{ name = "Libbie.ai" }]
 #   pydantic     MIT     - typed nodes/edges + validation
 #   pyyaml       MIT     - config file (plan section 7)
 #   httpx        BSD-3   - LLM HTTP client (OpenAI-compatible local + Anthropic API)
+#   msgspec      BSD-3   - fast JSON decode for graph/store IO (pydantic stays the schema layer)
 #   pypdf        BSD-3   - PDF text extraction (deliberately NOT PyMuPDF/fitz, which is AGPL-3.0)
 #   typer        MIT     - CLI (type-hint driven; built on click, which stays a transitive BSD-3 dep)
 dependencies = [
     "pydantic>=2.6",
     "pyyaml>=6.0",
     "httpx>=0.27",
+    "msgspec>=0.18",
     "pypdf>=4.2",
     "typer>=0.12",
 ]
 
 [project.optional-dependencies]
-# git ingest. GitPython is BSD-3-Clause. (We deliberately avoid pygit2, whose libgit2
-# bindings are GPL-2.0-with-linking-exception.) If GitPython is absent the git ingester
-# transparently falls back to shelling out to the `git` binary.
-git = ["GitPython>=3.1"]
-# Optional local embedding model if no OpenAI-compatible endpoint is available.
-# sentence-transformers is Apache-2.0.
-embed = ["sentence-transformers>=2.7"]
+# OS keyring for connector token storage (github.py / slack.py). Without it the
+# tokens fall back to a 0600 file under the store root.
+secrets = ["keyring>=19"]
 # Live Slack + Gmail connectors. ALL PERMISSIVE:
 #   slack_sdk              MIT       - Slack Web API client (built-in pagination + retry)
 #   google-auth            Apache-2  - Google OAuth credentials

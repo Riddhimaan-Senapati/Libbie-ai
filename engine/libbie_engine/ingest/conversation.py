@@ -100,8 +100,10 @@ def _load_slack_users(users_path: Path) -> dict[str, dict[str, Any]]:
     return {}
 
 
-def _slack_user_email(user_rec: dict[str, Any]) -> Optional[str]:
-    """Extract an email from a user record, tolerant of a missing profile."""
+def slack_user_email(user_rec: dict[str, Any]) -> Optional[str]:
+    """Extract an email from a Slack user record, tolerant of a missing profile.
+
+    Shared with the live Slack connector in ``libbie_engine.slack``."""
     profile = user_rec.get("profile") or {}
     if isinstance(profile, dict):
         email = profile.get("email")
@@ -121,7 +123,7 @@ def _ingest_slack(
     users_path = slack_dir / "users.json"
     users = _load_slack_users(users_path)
     for user_id, rec in users.items():
-        email = _slack_user_email(rec)
+        email = slack_user_email(rec)
         real_name = rec.get("real_name") or rec.get("name")
         profile = rec.get("profile") or {}
         display_name = (
@@ -167,7 +169,7 @@ def _ingest_slack(
                 # Resolve author to an email when we can; otherwise the user id.
                 author = None
                 if user_rec:
-                    author = _slack_user_email(user_rec) or user_id
+                    author = slack_user_email(user_rec) or user_id
                 else:
                     author = user_id
 
@@ -275,9 +277,10 @@ def resolve_thread_roots(parents: Mapping[str, Optional[str]]) -> dict[str, str]
 # --------------------------------------------------------------------------- #
 # .eml email files
 # --------------------------------------------------------------------------- #
-def _first_address(header_value: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+def first_address(header_value: Optional[str]) -> tuple[Optional[str], Optional[str]]:
     """Return ``(display_name, email)`` for the first address in a header, or
-    ``(None, None)`` when the header is absent/empty."""
+    ``(None, None)`` when the header is absent/empty. Shared with the live
+    email connector in ``libbie_engine.email_ingest``."""
     if not header_value:
         return None, None
     parsed = getaddresses([str(header_value)])
@@ -291,8 +294,9 @@ def _first_address(header_value: Optional[str]) -> tuple[Optional[str], Optional
     return None, None
 
 
-def _eml_body_text(message: Any) -> str:
-    """Extract the plain-text body from a parsed email message, defensively."""
+def eml_body_text(message: Any) -> str:
+    """Extract the plain-text body from a parsed email message, defensively.
+    Shared with the live email connector in ``libbie_engine.email_ingest``."""
     try:
         if message.is_multipart():
             # Prefer the first text/plain part.
@@ -342,7 +346,7 @@ def _ingest_eml_file(
 
     nodes: list[Node] = []
 
-    from_name, from_email = _first_address(message.get("From"))
+    from_name, from_email = first_address(message.get("From"))
     subject = message.get("Subject") or ""
 
     # Date -> datetime (tolerant of malformed/missing Date headers).
@@ -364,7 +368,7 @@ def _ingest_eml_file(
     has_headers = bool(own_id or parent_id or message.get("References"))
     key = own_id or f"path:{eml_path}"
 
-    body = _eml_body_text(message)
+    body = eml_body_text(message)
     text = f"{subject}\n{body}" if subject else body
 
     blob_hash = _put(
