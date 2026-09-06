@@ -39,13 +39,16 @@ Grab an installer for your OS from the
   pick labels/mailboxes to index (Settings → *Connect Email*). Reply chains are threaded by root.
 - **Knowledge-graph view** — a `react-force-graph` view of the provenance graph (TopBar →
   *Graph*): nodes coloured by kind, committed (solid) vs hypothesis (dashed) links, width by
-  confidence, an inspector, and node-kind/edge-type filters. Ships with a sample graph; load your
-  own with *Load graph.json…* (the picker runs in the Rust core).
+  confidence, an inspector, and node-kind/edge-type filters. The sample graph ships as a static
+  asset fetched on demand (not bundled JS); load your own `graph.json` with *Load graph.json…*
+  (the picker runs in the Rust core).
 - **Semantic retrieval** — an on-disk `sqlite-vec` index (nomic-embed), with keyword fallback.
 
 ## Stack
-Tauri 2 · Rust (tokio, reqwest, sysinfo, rusqlite + sqlite-vec) · React 19 · TypeScript ·
-Vite 6 · Tailwind v4 · `motion` · lucide-react · self-hosted fonts.
+Tauri 2 · Rust (tokio, reqwest, rusqlite + sqlite-vec, sysinfo with the `system` feature only) ·
+React 19 · TypeScript · Vite 6 · Tailwind v4 · `motion` via LazyMotion (domAnimation feature set) ·
+lucide-react · self-hosted fonts. Release builds use fat LTO, one codegen unit, stripped symbols,
+and abort-on-panic (see `[profile.release]` in `src-tauri/Cargo.toml`).
 
 ## Prerequisites (building from source)
 - **Node ≥ 20** and **Rust ≥ 1.77** (with the platform WebView: WebView2 on Windows,
@@ -151,10 +154,12 @@ the browser.
 
 ## Layout
 - `src/` — React UI + data layer (`lib/`), ported design system (`styles/globals.css`),
-  `components/TokenPanel.tsx`, `lib/pricing.ts`.
+  `components/TokenPanel.tsx`, `lib/pricing.ts`. The streamed answer text lives in
+  `lib/verdictStore.ts`, outside React state, so tokens re-render one paragraph instead of the
+  workspace.
 - `src-tauri/src/` — Rust core: `engine.rs` (local engine lifecycle), `inference.rs` (provider
   proxy + usage capture), `config.rs` (settings + provider targets + secret redaction),
-  `github.rs` (device flow + safe clone), `commands.rs` (IPC), `vecstore.rs` (sqlite-vec).
+  `github.rs` (device flow + safe clone/update), `commands.rs` (IPC), `vecstore.rs` (sqlite-vec).
 - `models/` — GGUF cache (git-ignored).
 
 Demo content ships as authored **sample data**, labelled in the UI. The full ingestion engine
