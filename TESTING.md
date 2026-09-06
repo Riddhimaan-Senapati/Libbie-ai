@@ -203,4 +203,4 @@ exact conversation, with both visible at once.
   edges get committed.
 
 For anything deeper (architecture, the build gates, what's real versus staged), start with
-[`CLAUDE.md`](CLAUDE.md) and [`docs/NEXT_STEPS.md`](docs/NEXT_STEPS.md).
+[`AGENTS.md`](AGENTS.md) and [`docs/NEXT_STEPS.md`](docs/NEXT_STEPS.md).

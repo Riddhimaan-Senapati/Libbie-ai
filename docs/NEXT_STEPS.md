@@ -1,7 +1,7 @@
 # Next steps — handoff backlog
 
 State as of **v0.1.0** (2026-07-19), updated after the cross-surface optimization pass
-(2026-09-06, [`optimization/README.md`](optimization/README.md)). Read [`../CLAUDE.md`](../CLAUDE.md)
+(2026-09-06, [`optimization/README.md`](optimization/README.md)). Read [`../AGENTS.md`](../AGENTS.md)
 first for how to build/test and the invariants. This is the prioritized backlog; each item says
 *what*, *why*, *where*, and *how to approach*. Nothing here is a known-broken regression — these
 are the honest gaps.

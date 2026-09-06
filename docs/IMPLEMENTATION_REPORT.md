@@ -233,4 +233,4 @@ The orjson ≥3.12 MPL-2.0 fork is sidestepped entirely. Skips recorded in the b
   all still hold (desktop PR did not touch `config.rs` validation).
 
 **Tests at this point:** engine 60/60 (0.5 s) · desktop 50/50, fmt+clippy clean · both web builds.
-Full orientation for the next session: [`../CLAUDE.md`](../CLAUDE.md); backlog: [`NEXT_STEPS.md`](NEXT_STEPS.md).
+Full orientation for the next session: [`../AGENTS.md`](../AGENTS.md); backlog: [`NEXT_STEPS.md`](NEXT_STEPS.md).
