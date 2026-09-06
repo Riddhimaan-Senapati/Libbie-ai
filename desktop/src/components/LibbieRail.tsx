@@ -1,4 +1,5 @@
-import { motion, AnimatePresence } from "motion/react";
+import * as React from "react";
+import { m as motion, AnimatePresence } from "motion/react";
 import {
   AlertTriangle,
   ArrowRight,
@@ -18,13 +19,14 @@ import { cn } from "@/lib/utils";
 
 export interface AnswerSession {
   question: string;
-  verdict: string;
+  /** True once the first streamed token landed (verdict text lives in verdictStore). */
+  started: boolean;
   streaming: boolean;
   retrieved: Retrieved;
   answeredLocally: boolean;
 }
 
-export function LibbieRail({
+export const LibbieRail = React.memo(function LibbieRail({
   session,
   view,
   onViewChange,
@@ -52,7 +54,7 @@ export function LibbieRail({
   onDraftHandover: () => void;
 }) {
   const showIntro = !session;
-  const thinking = !!session?.streaming && session.verdict.length === 0;
+  const thinking = !!session?.streaming && !session.started;
 
   const actions = [
     { label: "Show me the other stale decisions", Icon: ListChecks, onClick: onShowStale, disabled: false },
@@ -146,10 +148,9 @@ export function LibbieRail({
         </AnimatePresence>
 
         {/* streaming / final answer */}
-        {session && (session.verdict.length > 0 || !session.streaming) && (
+        {session && (session.started || !session.streaming) && (
           <AnswerSurface
             question={session.question}
-            verdict={session.verdict}
             streaming={session.streaming}
             retrieved={session.retrieved}
             view={view}
@@ -189,7 +190,7 @@ export function LibbieRail({
       </footer>
     </aside>
   );
-}
+});
 
 /** Collapsed-rail floating orb. */
 export function LibbieOrb({ onClick, proactive }: { onClick: () => void; proactive: boolean }) {

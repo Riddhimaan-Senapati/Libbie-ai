@@ -238,32 +238,40 @@ impl VecStore {
         .map_err(|e| AppError::vector_store(e.to_string()))?;
         tx.execute("delete from chunk_meta where source_id = ?1", [source_id])
             .map_err(|e| AppError::vector_store(e.to_string()))?;
-        for chunk in chunks {
-            tx.execute(
+        // Prepare once: re-preparing two statements per chunk (~32k prepares for
+        // a 4,000-file repo) dominated the insert cost after embeddings.
+        let mut meta_stmt = tx
+            .prepare(
                 "insert into chunk_meta(source_id, chunk_id, path, kind, line_start, conv_id)
                  values(?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
+            )
+            .map_err(|e| AppError::vector_store(e.to_string()))?;
+        let mut chunk_stmt = tx
+            .prepare("insert into chunks(id, embedding, kind, source_id) values(?1, ?2, ?3, ?4)")
+            .map_err(|e| AppError::vector_store(e.to_string()))?;
+        for chunk in chunks {
+            meta_stmt
+                .execute(params![
                     source_id,
                     chunk.chunk_id,
                     chunk.path,
                     chunk.kind,
                     chunk.line_start,
                     chunk.conv_id
-                ],
-            )
-            .map_err(|e| AppError::vector_store(e.to_string()))?;
+                ])
+                .map_err(|e| AppError::vector_store(e.to_string()))?;
             let id = tx.last_insert_rowid();
-            tx.execute(
-                "insert into chunks(id, embedding, kind, source_id) values(?1, ?2, ?3, ?4)",
-                params![
+            chunk_stmt
+                .execute(params![
                     id,
                     to_le_bytes(&normalize(chunk.embedding)),
                     chunk.kind,
                     source_id
-                ],
-            )
-            .map_err(|e| AppError::vector_store(e.to_string()))?;
+                ])
+                .map_err(|e| AppError::vector_store(e.to_string()))?;
         }
+        drop(meta_stmt);
+        drop(chunk_stmt);
         tx.commit()
             .map_err(|e| AppError::vector_store(e.to_string()))
     }

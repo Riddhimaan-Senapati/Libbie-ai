@@ -10,7 +10,6 @@ import {
   Info,
 } from "lucide-react";
 
-import sampleRaw from "@/assets/sample-graph.json";
 import {
   normalizeGraph,
   parseGraphJson,
@@ -36,7 +35,9 @@ const DIM_LINK = "rgba(74, 85, 120, 0.07)";
  *  structural edges stay legible. */
 const NOISY_EDGE_TYPE = "authored_by";
 
-const SAMPLE_GRAPH: NormalizedGraph = normalizeGraph(sampleRaw as unknown as RawGraph);
+// The 412 KB sample fixture ships as a public/ asset fetched on demand; bundling
+// it inline put a 327 KB object literal into this lazy chunk.
+const EMPTY_GRAPH: NormalizedGraph = normalizeGraph({ nodes: {}, edges: [] });
 
 type Endpoint = string | { id: string };
 const endpointId = (e: Endpoint): string => (typeof e === "string" ? e : e.id);
@@ -50,9 +51,28 @@ interface Incident {
 }
 
 export function GraphView() {
-  const [master, setMaster] = React.useState<NormalizedGraph>(SAMPLE_GRAPH);
+  const [master, setMaster] = React.useState<NormalizedGraph>(EMPTY_GRAPH);
   const [source, setSource] = React.useState<string>("Sample provenance graph");
   const [error, setError] = React.useState<string | null>(null);
+
+  // Load the sample fixture from public/ (kept out of the JS bundle).
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const resp = await fetch("sample-graph.json");
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const raw = (await resp.json()) as unknown as RawGraph;
+        if (!alive) return;
+        setMaster(normalizeGraph(raw));
+      } catch (e) {
+        if (alive) setError(`Could not load the sample graph: ${String(e)}`);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [hiddenEdgeTypes, setHiddenEdgeTypes] = React.useState<Set<string>>(

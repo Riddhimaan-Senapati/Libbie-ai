@@ -362,6 +362,23 @@ export interface AskHandlers {
 }
 
 /**
+ * Invoke a command whose last IPC argument is a Tauri event `Channel`, and
+ * dispatch each event to `onmessage`. The common plumbing behind every
+ * streaming/progress command (`ask_libbie`, downloads, connector runs).
+ */
+async function invokeWithChannel<E>(
+  cmd: string,
+  args: Record<string, unknown>,
+  argKey: string,
+  onmessage: (evt: E) => void,
+): Promise<void> {
+  const { invoke, Channel } = await import("@tauri-apps/api/core");
+  const channel = new Channel<E>();
+  channel.onmessage = onmessage;
+  await invoke(cmd, { ...args, [argKey]: channel });
+}
+
+/**
  * Stream a grounded chat completion. Uses IPC + a Tauri Channel in the app, or
  * a direct loopback SSE fetch in browser dev.
  */
@@ -371,20 +388,22 @@ export async function askLibbie(
   handlers: AskHandlers,
 ): Promise<void> {
   if (isTauri()) {
-    const { invoke, Channel } = await import("@tauri-apps/api/core");
-    const channel = new Channel<StreamEvent>();
-    channel.onmessage = (evt) => {
-      if (evt.type === "token") handlers.onToken(evt.text);
-      else if (evt.type === "usage")
-        handlers.onUsage?.({
-          inputTokens: evt.inputTokens,
-          outputTokens: evt.outputTokens,
-          tokensPerSec: evt.tokensPerSec,
-        });
-      else if (evt.type === "done") handlers.onDone(evt.finishReason);
-      else if (evt.type === "error") handlers.onError(evt.message);
-    };
-    await invoke("ask_libbie", { messages, options, onEvent: channel });
+    await invokeWithChannel<StreamEvent>(
+      "ask_libbie",
+      { messages, options },
+      "onEvent",
+      (evt) => {
+        if (evt.type === "token") handlers.onToken(evt.text);
+        else if (evt.type === "usage")
+          handlers.onUsage?.({
+            inputTokens: evt.inputTokens,
+            outputTokens: evt.outputTokens,
+            tokensPerSec: evt.tokensPerSec,
+          });
+        else if (evt.type === "done") handlers.onDone(evt.finishReason);
+        else if (evt.type === "error") handlers.onError(evt.message);
+      },
+    );
     return;
   }
   await devStreamChat(messages, options, handlers);
@@ -441,15 +460,6 @@ async function devStreamChat(
   for (const evt of parser.end()) {
     if (evt.type === "done") handlers.onDone(evt.finishReason);
   }
-}
-
-// ---------------------------------------------------------------------------
-// Embeddings (RAG index) — optional; requires an embedding engine.
-// ---------------------------------------------------------------------------
-
-export async function embedTexts(inputs: string[]): Promise<number[][]> {
-  if (isTauri()) return ipc<number[][]>("embed_texts", { inputs });
-  return devEmbedBatch(inputs);
 }
 
 // ---------------------------------------------------------------------------
@@ -535,6 +545,24 @@ export async function buildIndex(chunks: Chunk[]): Promise<IndexStatus> {
   };
 }
 
+/** Dev-mode KNN: cosine over the in-memory index, filtered + top-k. */
+function devKnn(qn: number[], kind: string | undefined, k: number): Hit[] {
+  return devIndex
+    .map((e, id) => ({ id, sim: dot(qn, e.embedding), e }))
+    .filter((x) => (kind ? x.e.meta.kind === kind : true))
+    .sort((a, b) => b.sim - a.sim)
+    .slice(0, k)
+    .map((x) => ({
+      id: x.id,
+      path: x.e.meta.path ?? "",
+      kind: x.e.meta.kind,
+      line_start: x.e.meta.line_start,
+      conv_id: x.e.meta.conv_id ?? "",
+      distance: 1 - x.sim,
+      similarity: Math.max(0, Math.min(1, x.sim)),
+    }));
+}
+
 export async function vectorSearch(
   query: string,
   k: number,
@@ -544,21 +572,7 @@ export async function vectorSearch(
   // Dev: embed the query, cosine over the in-memory index.
   const [q] = await devEmbedBatch([`search_query: ${query}`]);
   if (!q) return [];
-  const qn = l2normalize(q);
-  const scored = devIndex
-    .map((e, id) => ({ id, sim: dot(qn, e.embedding), e }))
-    .filter((x) => (kind ? x.e.meta.kind === kind : true))
-    .sort((a, b) => b.sim - a.sim)
-    .slice(0, k);
-  return scored.map((x) => ({
-    id: x.id,
-    path: x.e.meta.path ?? "",
-    kind: x.e.meta.kind,
-    line_start: x.e.meta.line_start,
-    conv_id: x.e.meta.conv_id ?? "",
-    distance: 1 - x.sim,
-    similarity: Math.max(0, Math.min(1, x.sim)),
-  }));
+  return devKnn(l2normalize(q), kind, k);
 }
 
 /** Embed a semantic query once and retrieve both citation kinds. */
@@ -578,24 +592,9 @@ export async function retrieveVector(
   const [q] = await devEmbedBatch([`search_query: ${query}`]);
   if (!q) return { code_hits: [], conversation_hits: [] };
   const qn = l2normalize(q);
-  const hitsFor = (kind: string, k: number): Hit[] =>
-    devIndex
-      .map((e, id) => ({ id, sim: dot(qn, e.embedding), e }))
-      .filter((x) => x.e.meta.kind === kind)
-      .sort((a, b) => b.sim - a.sim)
-      .slice(0, k)
-      .map((x) => ({
-        id: x.id,
-        path: x.e.meta.path ?? "",
-        kind: x.e.meta.kind,
-        line_start: x.e.meta.line_start,
-        conv_id: x.e.meta.conv_id ?? "",
-        distance: 1 - x.sim,
-        similarity: Math.max(0, Math.min(1, x.sim)),
-      }));
   return {
-    code_hits: hitsFor("code", codeK),
-    conversation_hits: hitsFor("conversation", conversationK),
+    code_hits: devKnn(qn, "code", codeK),
+    conversation_hits: devKnn(qn, "conversation", conversationK),
   };
 }
 
@@ -673,20 +672,16 @@ export async function downloadModel(
     handlers.onError("Model downloads are only available in the desktop app.");
     return;
   }
-  const { invoke, Channel } = await import("@tauri-apps/api/core");
-  const channel = new Channel<DownloadEvent>();
-  channel.onmessage = (evt) => {
-    if (evt.type === "progress") handlers.onProgress(evt.downloaded, evt.total, evt.fraction);
-    else if (evt.type === "done") handlers.onDone(evt.path);
-    else if (evt.type === "error") handlers.onError(evt.message);
-  };
-  await invoke("download_model", {
-    repo,
-    filename,
-    revision: revision ?? null,
-    token: token ?? null,
-    onProgress: channel,
-  });
+  await invokeWithChannel<DownloadEvent>(
+    "download_model",
+    { repo, filename, revision: revision ?? null, token: token ?? null },
+    "onProgress",
+    (evt) => {
+      if (evt.type === "progress") handlers.onProgress(evt.downloaded, evt.total, evt.fraction);
+      else if (evt.type === "done") handlers.onDone(evt.path);
+      else if (evt.type === "error") handlers.onError(evt.message);
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -735,14 +730,16 @@ export async function githubLogin(handlers: GithubLoginHandlers): Promise<void> 
     handlers.onError("Connecting GitHub is only available in the desktop app.");
     return;
   }
-  const { invoke, Channel } = await import("@tauri-apps/api/core");
-  const channel = new Channel<GithubLoginEvent>();
-  channel.onmessage = (evt) => {
-    if (evt.type === "code") handlers.onCode(evt.userCode, evt.verificationUri, evt.expiresIn);
-    else if (evt.type === "done") handlers.onDone();
-    else if (evt.type === "error") handlers.onError(evt.message);
-  };
-  await invoke("github_login", { onEvent: channel });
+  await invokeWithChannel<GithubLoginEvent>(
+    "github_login",
+    {},
+    "onEvent",
+    (evt) => {
+      if (evt.type === "code") handlers.onCode(evt.userCode, evt.verificationUri, evt.expiresIn);
+      else if (evt.type === "done") handlers.onDone();
+      else if (evt.type === "error") handlers.onError(evt.message);
+    },
+  );
 }
 
 /** List repositories the connected GitHub account can access. */
@@ -760,15 +757,7 @@ export async function githubIndexRepo(
     handlers.onError("Indexing a repository is only available in the desktop app.");
     return;
   }
-  const { invoke, Channel } = await import("@tauri-apps/api/core");
-  const channel = new Channel<IndexEvent>();
-  channel.onmessage = (evt) => {
-    if (evt.type === "status") handlers.onStatus(evt.message);
-    else if (evt.type === "progress") handlers.onProgress(evt.done, evt.total, evt.fraction);
-    else if (evt.type === "done") handlers.onDone(evt.count);
-    else if (evt.type === "error") handlers.onError(evt.message);
-  };
-  await invoke("github_index_repo", { fullName, onEvent: channel });
+  await indexViaChannel("github_index_repo", { fullName }, handlers);
 }
 
 // ---------------------------------------------------------------------------
@@ -810,16 +799,11 @@ function connectViaChannel(
   args: Record<string, unknown>,
   handlers: ConnectHandlers,
 ): Promise<void> {
-  return (async () => {
-    const { invoke, Channel } = await import("@tauri-apps/api/core");
-    const channel = new Channel<ConnectEvent>();
-    channel.onmessage = (evt) => {
-      if (evt.type === "url") handlers.onUrl(evt.url);
-      else if (evt.type === "done") handlers.onDone();
-      else if (evt.type === "error") handlers.onError(evt.message);
-    };
-    await invoke(cmd, { ...args, onEvent: channel });
-  })();
+  return invokeWithChannel<ConnectEvent>(cmd, args, "onEvent", (evt) => {
+    if (evt.type === "url") handlers.onUrl(evt.url);
+    else if (evt.type === "done") handlers.onDone();
+    else if (evt.type === "error") handlers.onError(evt.message);
+  });
 }
 
 function indexViaChannel(
@@ -827,17 +811,12 @@ function indexViaChannel(
   args: Record<string, unknown>,
   handlers: IndexHandlers,
 ): Promise<void> {
-  return (async () => {
-    const { invoke, Channel } = await import("@tauri-apps/api/core");
-    const channel = new Channel<IndexEvent>();
-    channel.onmessage = (evt) => {
-      if (evt.type === "status") handlers.onStatus(evt.message);
-      else if (evt.type === "progress") handlers.onProgress(evt.done, evt.total, evt.fraction);
-      else if (evt.type === "done") handlers.onDone(evt.count);
-      else if (evt.type === "error") handlers.onError(evt.message);
-    };
-    await invoke(cmd, { ...args, onEvent: channel });
-  })();
+  return invokeWithChannel<IndexEvent>(cmd, args, "onEvent", (evt) => {
+    if (evt.type === "status") handlers.onStatus(evt.message);
+    else if (evt.type === "progress") handlers.onProgress(evt.done, evt.total, evt.fraction);
+    else if (evt.type === "done") handlers.onDone(evt.count);
+    else if (evt.type === "error") handlers.onError(evt.message);
+  });
 }
 
 /**

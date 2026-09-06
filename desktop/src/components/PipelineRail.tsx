@@ -17,7 +17,7 @@ function grouped() {
   return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 }
 
-export function PipelineRail({
+export const PipelineRail = React.memo(function PipelineRail({
   selectedPath,
   onSelect,
   onCollapse,
@@ -105,4 +105,4 @@ export function PipelineRail({
       </footer>
     </aside>
   );
-}
+});

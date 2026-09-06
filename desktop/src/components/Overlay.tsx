@@ -1,4 +1,4 @@
-import { motion, AnimatePresence } from "motion/react";
+import { m as motion, AnimatePresence } from "motion/react";
 import { X } from "lucide-react";
 
 /** A right-docked sheet used for the risk watchlist and handover export. */
