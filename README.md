@@ -114,7 +114,7 @@ npm run dev            # http://localhost:3000  (/ and /demo)
 ### Engine
 ```bash
 cd engine
-python -m venv .venv && ./.venv/Scripts/pip install -e ".[dev,git]"
+python -m venv .venv && ./.venv/Scripts/pip install -e ".[dev]"
 libbie ingest --all --sample && libbie join && libbie brief --pipeline germline
 ```
 
@@ -158,14 +158,16 @@ macOS, and Linux and attaches them to a GitHub Release, the source of the downlo
 ## Licensing posture
 
 MIT, and permissive throughout. Runtime dependencies are MIT / BSD / Apache-2.0 only, with no
-GPL/AGPL/SSPL. The engine avoids the common copyleft traps in this space (pypdf
-over PyMuPDF, GitPython over pygit2, reqwest/httpx over LGPL clients). See
-[`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md) for the full audit.
+GPL/AGPL/SSPL. The engine avoids the common copyleft traps in this space (pypdf over PyMuPDF,
+the `git` CLI over pygit2, msgspec over the MPL-2.0 orjson fork, reqwest/httpx over LGPL
+clients). See [`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md) for the full audit.
 
 ## Docs
 - [`TESTING.md`](TESTING.md) — how to test Libbie by hand (engine, desktop, web).
 - [`desktop/README.md`](desktop/README.md) — desktop app: providers, models, GitHub, air-gap.
 - [`engine/README.md`](engine/README.md) — the provenance engine and CLI.
 - [`libbie/README.md`](libbie/README.md) — the web demo.
+- [`docs/optimization/README.md`](docs/optimization/README.md) — the measured cross-surface
+  optimization pass (what changed, what it bought, what was skipped).
 - [`docs/main_plan.md`](docs/main_plan.md) — the full engineering plan.
 - [`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md) — what's built, license audit, security review, eval.

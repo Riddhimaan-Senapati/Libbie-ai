@@ -30,7 +30,7 @@ plausible-but-wrong edge (`confidence-threshold=30 → decision`) as a *hypothes
 This is the plan's core discipline: _wrong edges are worse than missing edges._
 
 ```bash
-cd engine && python -m venv .venv && ./.venv/Scripts/pip install -e ".[dev,git]"
+cd engine && python -m venv .venv && ./.venv/Scripts/pip install -e ".[dev]"
 ./.venv/Scripts/libbie ingest --all --sample && ./.venv/Scripts/libbie join
 ./.venv/Scripts/libbie brief --pipeline germline    # the briefing
 ./.venv/Scripts/libbie eval                          # P/R = 1.00
@@ -202,4 +202,35 @@ published Windows/macOS/Linux installers on the `v0.1.0` tag; README download li
 Installers are **unsigned** (see `NEXT_STEPS.md` P0-3).
 
 **Tests at this point:** engine 58/58 · desktop cargo fmt+clippy clean, 47/47, build · both web builds.
+Full orientation for the next session: [`../CLAUDE.md`](../CLAUDE.md); backlog: [`NEXT_STEPS.md`](NEXT_STEPS.md).
+
+---
+
+## 10. Follow-up (part 4): cross-surface optimization pass — DONE ✅
+
+_2026-09-06. Audited, planned, and implemented in one day, one PR per surface. Full evidence and
+per-item detail: [`optimization/README.md`](optimization/README.md)._
+
+**Measured results (this machine, warm caches):** git ingest 2.81 s → 0.07 s; 300 artifact-store
+puts 954 ms → 342 ms (the quadratic index flush is gone; per-blob writes set the floor); engine
+suite 13.2 s → 0.5 s (60 tests, two new); desktop GraphView chunk 327 KB → 16 KB and main chunk
+438 KB → 390 KB; web first-load JS `/demo` 1.27 MB → 851 KB and `/` 773 KB → 715 KB raw (the Next 16
+framework floor is 582 KB, so app-specific JS fell ~55% and ~30%).
+
+**Dependency changes (licenses re-verified on PyPI/crates.io):** added `msgspec` (BSD-3) for JSON
+decode and declared `keyring` (MIT) as a `[secrets]` extra; removed `GitPython`,
+`sentence-transformers`, `recharts`, `zod`, `next-themes`; moved `shadcn` to devDependencies.
+The orjson ≥3.12 MPL-2.0 fork is sidestepped entirely. Skips recorded in the backlog.
+
+**Security-relevant changes, verified:**
+- `github.update_repo` refreshes an existing shallow clone with the clone's own token discipline
+  (token-less URL, ephemeral GIT_ASKPASS, `-c credential.helper=`, token only in the child env).
+  Two new tests assert the token never reaches argv.
+- Desktop SSE decode now parses complete lines from a byte buffer, fixing multi-byte UTF-8
+  corruption at chunk boundaries (a correctness bug the audit surfaced, not just perf).
+- IMAP switched to ranged `RFC822.PEEK` fetch (still verified-TLS, readonly session).
+- Web `AppConfig`/secret-redaction invariants untouched; the air-gap, loopback, and picker rules
+  all still hold (desktop PR did not touch `config.rs` validation).
+
+**Tests at this point:** engine 60/60 (0.5 s) · desktop 50/50, fmt+clippy clean · both web builds.
 Full orientation for the next session: [`../CLAUDE.md`](../CLAUDE.md); backlog: [`NEXT_STEPS.md`](NEXT_STEPS.md).

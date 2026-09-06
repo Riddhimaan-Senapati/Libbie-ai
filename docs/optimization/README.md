@@ -1,8 +1,10 @@
 # Libbie optimization plan
 
-This plan makes the repo faster, smaller in memory, and shorter in lines of code. It is written
-down, not yet implemented. Every finding cites the code as of 2026-09-06; line numbers drift as
-the repo moves.
+This plan makes the repo faster, smaller in memory, and shorter in lines of code. It was
+audited and written on 2026-09-06, and implemented the same day on three branches, one PR
+per surface: `perf/engine-optimizations`, `perf/desktop-optimizations`, and
+`perf/web-optimizations`. Every finding cites the code as of 2026-09-06; line numbers
+drift as the repo moves.
 
 The work lands as three independent PRs, one per surface, each mergeable on its own:
 
@@ -27,21 +29,24 @@ it adds.
 
 ## Verified dependency decisions
 
-All licenses checked on 2026-09-06 against PyPI and crates.io.
+All licenses checked on 2026-09-06 against PyPI and crates.io. As implemented, msgspec and
+keyring are in, and GitPython, sentence-transformers, recharts, zod, and next-themes are
+out. rapidfuzz, pypdfium2, ts-rs, rfd, and mimalloc were verified and then skipped or left
+optional. See "Skipped from scope" below.
 
 | Action | Package | License | Reason |
 |---|---|---|---|
-| Add | `msgspec` 0.21.1 | BSD-3-Clause | `msgspec.json` for graph and store IO. On par with orjson without schemas, per the msgspec benchmarks. No license ceiling. |
-| Add | `rapidfuzz` 3.14.6 | MIT | Real fuzzy matching for person resolution in `join/candidates.py`. |
-| Swap | `pypdf` → `pypdfium2` 5.13.0 | Apache-2.0 and BSD-3 | 5-10× faster PDF text extraction. Optional item. |
-| Remove | `GitPython` | — | Measured 40× slower than the git-CLI fallback it wraps. |
+| Add | `msgspec` (BSD-3-Clause) | verified | `msgspec.json` decodes graph and store IO. No license ceiling. |
+| Add | `keyring` (MIT) | verified | Declared as the `[secrets]` extra. It was already imported but undeclared. |
+| Add | `rapidfuzz` (MIT) | verified | Skipped. See "Skipped from scope". |
+| Swap | `pypdf` → `pypdfium2` (Apache-2.0 and BSD-3) | verified | Skipped. See "Skipped from scope". |
+| Remove | `GitPython` | — | Measured 40× slower than the git-CLI fallback it wrapped. |
 | Remove | `sentence-transformers` | — | Declared in `pyproject.toml`, never imported anywhere. |
-| Declare | `keyring` | MIT | Already imported in `github.py` and `slack.py` but undeclared, so it always falls back to the file store silently. |
-| Add | `rfd` 0.17.2 | MIT | Replaces `tauri-plugin-dialog`, dropping the transitive `tauri-plugin-fs`. |
-| Add | `mimalloc` 0.1.52 | MIT | Global allocator for the string-heavy indexing paths. Optional, unmeasured on this app. |
-| Add | `ts-rs` 12.0.1 | MIT | Generates the TS `AppConfig` type from Rust, ending the `devConfig()` drift hazard. |
 | Remove | `recharts` | — | 499.5 KB raw for one fixed-domain six-bar chart. |
-| Remove | `zod`, `next-themes` | — | `zod` has zero imports. `next-themes` has no provider anywhere. |
+| Remove | `zod`, `next-themes` | — | `zod` had zero imports. `next-themes` had no provider anywhere. |
+| Add | `rfd` (MIT) | verified | Optional desktop item, not taken this pass. |
+| Add | `mimalloc` (MIT) | verified | Optional desktop item, not taken this pass. |
+| Add | `ts-rs` (MIT) | verified | Skipped. See "Skipped from scope". |
 
 ### The orjson fork
 
@@ -62,18 +67,38 @@ The user picked the repo policy (MIT, BSD, Apache-2.0 all acceptable) over stric
 
 ## Expected results
 
-| Metric | Before | After |
-|---|---|---|
-| Git ingest, sample repo (measured) | 2.81 s | 0.07 s |
-| 300 artifact-store puts (measured) | 954 ms | ~10 ms |
-| Engine test suite (measured) | 13.2 s | ~1 s |
-| Desktop installer size | baseline | −20-35% (expected magnitude) |
-| GraphView JS chunk (measured) | 327 KB | ~30 KB |
-| `/demo` first-load JS (measured) | 1.27 MB | ~600 KB raw |
-| `/` first-load JS (measured) | 773 KB | ~300-400 KB raw |
-| Total LOC across three surfaces | ~21,400 | ~18,100 (−3,300) |
+Measured on this machine (Windows, warm caches) the same day, unless marked otherwise.
 
-Numbers marked expected are standard magnitudes for the change, not measurements on this repo.
+| Metric | Before | Predicted | Actual |
+|---|---|---|---|
+| Git ingest, sample repo | 2.81 s | 0.07 s | 0.07 s. The subprocess path became the only path. |
+| 300 artifact-store puts | 954 ms | ~10 ms | 342 ms. The quadratic index flush is gone; per-blob file writes set the floor. |
+| Engine test suite | 13.2 s | ~1 s | 0.5 s. Fixture sharing plus the git-path removal. |
+| Desktop installer size | baseline | −20-35% | Not measured locally. CI builds the installers; the release profile (LTO, stripped symbols, abort panics) is in place. |
+| GraphView JS chunk (desktop) | 327 KB | ~30 KB | 16 KB. The sample graph now ships as a fetched asset. |
+| Desktop main chunk | 438 KB | — | 390 KB, via LazyMotion with the domAnimation feature set. |
+| `/demo` first-load JS | 1.27 MB | ~600 KB raw | 851 KB raw. |
+| `/` first-load JS | 773 KB | ~300-400 KB raw | 715 KB raw. |
+| Total LOC across three surfaces | ~21,400 | ~18,100 | ~19,100 (−2,300). |
+
+The web predictions assumed a small framework baseline. The Next 16 runtime alone measures
+582 KB of raw first-load JS (the empty `_not-found` route). App-specific JS fell about 55%
+on `/demo` and 30% on `/`; the floor is the framework, not this repo's code.
+
+## Skipped from scope
+
+Verified and deliberately not taken. Each is a candidate for a later PR.
+
+- **rapidfuzz** (engine). Fuzzy matching would change person-resolution semantics that the
+  join tests pin. The current first-initial-plus-lastname match already merges the sample's
+  "E. Vasquez" into "Elena Vasquez".
+- **pypdfium2** (engine). Faster PDF extraction, but the swap has no test coverage on the
+  extraction path.
+- **ts-rs** (desktop). Generates the TS `AppConfig` from Rust. It needs build and CI wiring.
+  The `devConfig()` drift it prevents is documented.
+- **tauri.ts / Settings.tsx splits** (desktop item 11). Pure structure moves with real
+  regression risk and no user-visible change. The item's dead-code deletion and dedupe did land.
+- **`next/font/local`** (web hygiene). Needs vendored font files, which is a policy decision.
 
 ## User decisions that shaped the plan
 

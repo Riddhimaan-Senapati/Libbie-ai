@@ -1,5 +1,11 @@
 # PR 2: desktop
 
+Implemented on `perf/desktop-optimizations` (2026-09-06). Items 1-10 and 12 landed in full.
+Item 11 landed as its deletions and dedupes only. The file splits and ts-rs generation were
+skipped. Item 13 stayed optional. The plan's 100 ms download throttle became a ~200-event
+cap per file, which needs no clock. The cite-marker `layoutId` became a CSS animation
+because the domAnimation feature set has no layout animations.
+
 The Tauri app. Goal: smaller installer, no IPC flooding, no whole-app re-render per token, about
 −650 LOC across Rust and TS. Gates before merge: `cargo fmt --check`,
 `cargo clippy --all-targets -- -D warnings`, `cargo test --lib`, and `npm run build`.

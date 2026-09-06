@@ -1,14 +1,16 @@
 # Next steps — handoff backlog
 
-State as of **v0.1.0** (2026-07-19). Read [`../CLAUDE.md`](../CLAUDE.md) first for how to build/test
-and the invariants. This is the prioritized backlog; each item says *what*, *why*, *where*, and
-*how to approach*. Nothing here is a known-broken regression — these are the honest gaps.
+State as of **v0.1.0** (2026-07-19), updated after the cross-surface optimization pass
+(2026-09-06, [`optimization/README.md`](optimization/README.md)). Read [`../CLAUDE.md`](../CLAUDE.md)
+first for how to build/test and the invariants. This is the prioritized backlog; each item says
+*what*, *why*, *where*, and *how to approach*. Nothing here is a known-broken regression — these
+are the honest gaps.
 
 ## Ground truth: what is real vs. staged
 - **Real** (engine + desktop): ingest → join → graph → briefing; local + cloud (OpenAI-compatible +
   Anthropic) inference; HuggingFace model download; token/cost tracking; GitHub/Slack/Gmail/IMAP
-  connectors; the provenance knowledge-graph view. 58 engine tests, 47 desktop Rust tests, all builds
-  green, CI green on `main`.
+  connectors; the provenance knowledge-graph view. 60 engine tests, 50 desktop Rust tests, all
+  builds green, CI green on `main`.
 - **Staged sample data**: the `libbie/` `/demo` web app (authored fixtures, labeled in the UI). The
   connectors/graph are showcased there as product capabilities, not run live in the browser.
 - **Not exercised in default runs**: the LLM `api`/`local` backends work and are integration-tested
@@ -78,6 +80,20 @@ and the invariants. This is the prioritized backlog; each item says *what*, *why
 14. **CI action deprecation.** Runs warn that `actions/checkout@v4`/`setup-node@v4` target Node 20 (now
     forced to 24). Bump when convenient.
 15. **Bundle a `llama-server` sidecar** for a self-contained installer (see `desktop/BUILD_SPEC.md` §8.1).
+
+## Deferred from the optimization pass
+
+Verified and skipped on purpose, recorded in [`optimization/README.md`](optimization/README.md)
+("Skipped from scope"). Any of these can be its own small PR.
+
+- **pypdfium2** for PDF extraction (engine, 5-10× faster). Needs a test on the extraction path first.
+- **rapidfuzz** for person resolution (engine). Changes match semantics the join tests pin.
+- **ts-rs** to generate the TS `AppConfig` (desktop). Kills the `devConfig()` drift. Needs build + CI wiring.
+- **Split `tauri.ts` and `Settings.tsx`** (desktop). Pure structure; do it when either file is next edited.
+- **`next/font/local`** (web). Vendor the woff2 files so CI builds stop fetching Google Fonts.
+- **Measure installer size** against the new `[profile.release]` (desktop). The profile is in; the
+  −20-35% prediction is unverified until the next CI release build.
+- **`mimalloc` as the Rust global allocator** (desktop). Unmeasured experiment; measure before/after.
 
 ## Operator setup a new session should know is required for live use
 - **GitHub**: register an OAuth App (device flow) → `LIBBIE_GITHUB_CLIENT_ID`.

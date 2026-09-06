@@ -1,5 +1,10 @@
 # PR 3: web
 
+Implemented on `perf/web-optimizations` (2026-09-06). Items 1-9 and the STALE_HINTS part of
+item 10 landed. `next/font/local` was skipped. Measured first-load JS: `/demo` 1.27 MB to
+851 KB raw, `/` 773 KB to 715 KB raw. The Next 16 framework floor is 582 KB, so the
+app-specific share fell about 55% and 30%.
+
 The Next.js 16 site in `libbie/` plus `shared/demo-data/`. Goal: about one-third of the LOC gone,
 `/demo` first load roughly halved, landing page mostly server-rendered. Gate before merge:
 `npm run build`.

@@ -30,12 +30,12 @@ This proves the code compiles and the logic holds, without setting anything up.
 ```bash
 # Engine
 cd engine
-python -m venv .venv && ./.venv/Scripts/pip install -e ".[dev,git,connectors]"
-./.venv/Scripts/python -m pytest -q            # expect ~58 passing
+python -m venv .venv && ./.venv/Scripts/pip install -e ".[dev,connectors]"
+./.venv/Scripts/python -m pytest -q            # expect 60 passing, under a second
 
 # Desktop (Rust core)
 cd ../desktop/src-tauri
-cargo test --lib                               # expect ~47 passing
+cargo test --lib                               # expect 50 passing
 cargo fmt --check && cargo clippy --all-targets -- -D warnings
 
 # Web + desktop webview build
@@ -53,7 +53,7 @@ few seconds without reading any output yourself.
 
 ```bash
 cd engine
-python -m venv .venv && ./.venv/Scripts/pip install -e ".[dev,git,connectors]"
+python -m venv .venv && ./.venv/Scripts/pip install -e ".[dev,connectors]"
 ./.venv/Scripts/python scripts/smoke_test.py     # macOS/Linux: ./.venv/bin/python
 ```
 

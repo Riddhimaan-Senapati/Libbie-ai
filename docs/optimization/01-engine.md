@@ -1,5 +1,9 @@
 # PR 1: engine
 
+Implemented on `perf/engine-optimizations` (2026-09-06). Items 1-12 landed. Item 8's two
+optional dependencies were skipped. See the README's "Skipped from scope". The suite went
+from 58 to 60 tests and runs in 0.5 s.
+
 The Python provenance engine. Goal: measured speedups on ingest and join, about −460 LOC, fewer
 dependencies. Gate before merge: `./.venv/Scripts/python -m pytest -q` (58 tests at the time of
 writing).

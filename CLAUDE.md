@@ -34,8 +34,8 @@ Windows dev host; the Bash tool is Git Bash (POSIX). Python is at `engine/.venv/
 **Engine (Python):**
 ```bash
 cd engine
-python -m venv .venv && ./.venv/Scripts/pip install -e ".[dev,git,connectors]"
-./.venv/Scripts/python -m pytest -q          # full suite (was 58 at v0.1.0)
+python -m venv .venv && ./.venv/Scripts/pip install -e ".[dev,connectors]"
+./.venv/Scripts/python -m pytest -q          # full suite, 60 tests, well under a second
 ./.venv/Scripts/libbie ingest --all --sample && ./.venv/Scripts/libbie join
 ./.venv/Scripts/libbie brief --pipeline germline
 ```
@@ -76,7 +76,8 @@ merge into a feature branch, re-run all of them. **Wait for the PR's CI to go gr
 
 - **Permissive licenses only** (MIT / BSD / Apache-2.0). No GPL/AGPL/LGPL/BUSL/SSPL. Before adding a
   dependency, verify its license. Known avoid-list already dodged: PyMuPDF (AGPL) → `pypdf`;
-  pygit2/libgit2 (GPL) → GitPython/`git` CLI; PyGithub (LGPL) → httpx; `git2` (GPL) → `git` CLI;
+  pygit2/libgit2 and GitPython (GPL bindings, or a subprocess per commit) → the `git` CLI in one call;
+  orjson ≥3.12 (MPL-2.0 fork) → `msgspec`; PyGithub (LGPL) → httpx;
   GoJS/yFiles/etc. (commercial) → `react-force-graph`.
 - **Library research**: use the `/find-docs` (context7) and `/deep-research` skills to pick and
   verify libraries — that's how the current stack was chosen.
@@ -121,6 +122,9 @@ download links point at `/releases/latest`). Installers are currently **unsigned
 ## Where the context is
 - [`TESTING.md`](TESTING.md) — hand-testing walkthrough for a human (engine, desktop, web).
 - [`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md) — what was built + the license/security audits.
+- [`docs/optimization/README.md`](docs/optimization/README.md) — the measured cross-surface
+  optimization pass. Read it before any perf or dependency work; it records what was measured,
+  what landed, and what was skipped.
 - [`docs/NEXT_STEPS.md`](docs/NEXT_STEPS.md) — prioritized backlog for the next session.
 - [`docs/main_plan.md`](docs/main_plan.md) — the full engineering plan the engine implements.
 - Per-surface detail: [`engine/README.md`](engine/README.md), [`desktop/README.md`](desktop/README.md), [`libbie/README.md`](libbie/README.md).
