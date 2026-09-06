@@ -255,10 +255,7 @@ pub async fn stream_chat(
         // draining per line (a drain memmoves the whole tail, O(n^2) over a
         // long stream); the consumed prefix is trimmed once per chunk.
         let mut consumed = 0;
-        loop {
-            let Some(nl) = buf[consumed..].iter().position(|&b| b == b'\n') else {
-                break;
-            };
+        while let Some(nl) = buf[consumed..].iter().position(|&b| b == b'\n') {
             let line = std::str::from_utf8(&buf[consumed..consumed + nl])
                 .unwrap_or_default()
                 .trim();
