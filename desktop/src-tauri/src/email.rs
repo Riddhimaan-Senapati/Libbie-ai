@@ -226,6 +226,33 @@ pub async fn gmail_get_message(
     Ok(parse_gmail_message(&data))
 }
 
+/// Fetch and normalise Gmail messages with bounded concurrency (8 in flight),
+/// preserving `ids` order. Each request goes through the 429-aware `gmail_get`
+/// backoff; the first failure fails the whole batch (same as the old
+/// sequential loop).
+pub async fn gmail_get_messages(
+    client: &reqwest::Client,
+    token: &str,
+    ids: &[String],
+    mut on_progress: impl FnMut(usize, usize),
+) -> Result<Vec<EmailRecord>, String> {
+    use futures_util::StreamExt;
+
+    let total = ids.len();
+    let fetched: Vec<Result<EmailRecord, String>> = futures_util::stream::iter(ids.iter().cloned())
+        .map(|id| async move { gmail_get_message(client, token, &id).await })
+        .buffered(8)
+        .collect()
+        .await;
+
+    let mut out = Vec::with_capacity(total);
+    for (done, res) in fetched.into_iter().enumerate() {
+        out.push(res?);
+        on_progress(done + 1, total);
+    }
+    Ok(out)
+}
+
 async fn gmail_get(client: &reqwest::Client, token: &str, url: &str) -> Result<Value, String> {
     for attempt in 0..4 {
         let resp = client

@@ -1,5 +1,5 @@
 import * as React from "react";
-import { motion, AnimatePresence } from "motion/react";
+import { m as motion, AnimatePresence } from "motion/react";
 import {
   Command,
   Settings as SettingsIcon,
@@ -13,6 +13,7 @@ import {
 import { pipeline, getCodeFile, answers, proactiveNudge, libbie } from "@/lib/data";
 import type { CodeFile, CodeRef } from "@/lib/types";
 import { retrieve, retrieveVector, chunkCorpus, buildMessages, type Retrieved } from "@/lib/rag";
+import { verdictStore } from "@/lib/verdictStore";
 import * as api from "@/lib/tauri";
 import type {
   AppConfig,
@@ -40,6 +41,20 @@ const DEFAULT_ENGINE_STATUS: EngineStatus = {
   pid: null,
   message: "Engine stopped",
 };
+
+/** Field-wise equality so the 4 s poll doesn't re-render the app when the
+ * engine status object is identical apart from its identity. */
+function sameStatus(a: EngineStatus, b: EngineStatus): boolean {
+  return (
+    a.running === b.running &&
+    a.healthy === b.healthy &&
+    a.engine === b.engine &&
+    a.model === b.model &&
+    a.base_url === b.base_url &&
+    a.pid === b.pid &&
+    a.message === b.message
+  );
+}
 
 import { Logo } from "@/components/Logo";
 import { ReadingIntro } from "@/components/ReadingIntro";
@@ -126,7 +141,8 @@ export default function App() {
   // ---- boot -------------------------------------------------------------
   const refreshStatus = React.useCallback(async () => {
     try {
-      setStatus(await api.engineStatus());
+      const next = await api.engineStatus();
+      setStatus((prev) => (sameStatus(prev, next) ? prev : next));
     } catch {
       /* ignore */
     }
@@ -179,9 +195,7 @@ export default function App() {
     if (screen === "reading") return;
     const id = setInterval(refreshStatus, 4000);
     return () => clearInterval(id);
-  }, [screen, refreshStatus]);
-
-  // ---- engine control ---------------------------------------------------
+  }, [screen, refreshStatus]);  // ---- engine control ---------------------------------------------------
   const handleStart = React.useCallback(async () => {
     setEngineBusy(true);
     try {
@@ -273,9 +287,13 @@ export default function App() {
   const runInference = React.useCallback(
     async (question: string, retrieved: Retrieved, audience: "technical" | "executive") => {
       const id = ++reqId.current;
+      // Streamed text accumulates in the verdict store; App state only tracks
+      // the session envelope (started/streaming), so a token never re-renders
+      // the whole workspace.
+      verdictStore.reset();
       setSession({
         question,
-        verdict: "",
+        started: false,
         streaming: true,
         retrieved,
         answeredLocally: !!config?.offline_mode,
@@ -284,7 +302,8 @@ export default function App() {
       await api.askLibbie(messages, { temperature: 0.2, max_tokens: 512 }, {
         onToken: (t) => {
           if (id !== reqId.current) return;
-          setSession((s) => (s ? { ...s, verdict: s.verdict + t } : s));
+          verdictStore.append(t);
+          setSession((s) => (s && !s.started ? { ...s, started: true } : s));
         },
         onUsage: (u) => {
           if (id !== reqId.current) return;
@@ -317,17 +336,10 @@ export default function App() {
         },
         onError: (msg) => {
           if (id !== reqId.current) return;
-          setSession((s) =>
-            s
-              ? {
-                  ...s,
-                  streaming: false,
-                  verdict:
-                    s.verdict ||
-                    `I couldn't reach the model provider. ${msg}\n\nCheck Settings (engine or API key), then ask again.`,
-                }
-              : s,
+          verdictStore.set(
+            `I couldn't reach the model provider. ${msg}\n\nCheck Settings (engine or API key), then ask again.`,
           );
+          setSession((s) => (s ? { ...s, streaming: false, started: true } : s));
         },
       });
     },
@@ -350,7 +362,7 @@ export default function App() {
       // Show the thinking state immediately (before engine start + retrieval).
       setSession({
         question,
-        verdict: "",
+        started: false,
         streaming: true,
         retrieved: EMPTY_RETRIEVED,
         answeredLocally: !!config?.offline_mode,
@@ -361,13 +373,15 @@ export default function App() {
       if (!usingCloud && !status.healthy) {
         const s = await handleStart();
         if (!s?.healthy) {
+          verdictStore.set(
+            "The local engine isn't running yet. Open Settings, pick a GGUF model and press Start engine, or choose a cloud provider, then ask me again.",
+          );
           setSession((cur) =>
             cur
               ? {
                   ...cur,
                   streaming: false,
-                  verdict:
-                    "The local engine isn't running yet. Open Settings, pick a GGUF model and press Start engine, or choose a cloud provider, then ask me again.",
+                  started: true,
                 }
               : cur,
           );
@@ -427,9 +441,9 @@ export default function App() {
 
   // status line for the rail header
   const statusLine = session?.streaming
-    ? session.verdict.length === 0
-      ? thinkingLine
-      : "Answering…"
+    ? session.started
+      ? "Answering…"
+      : thinkingLine
     : status.healthy
       ? libbie.idleStatus
       : status.message;

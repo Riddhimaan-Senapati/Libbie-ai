@@ -25,14 +25,15 @@ pub struct AppState {
     pub config: Mutex<AppConfig>,
     /// The on-disk vector index. `None` when it could not be opened (corrupt/
     /// locked file, unwritable data dir) — the app still launches and retrieval
-    /// degrades to lexical-only rather than crashing on startup.
-    pub vec: Option<VecStore>,
+    /// degrades to lexical-only rather than crashing on startup. Shared behind
+    /// an Arc so SQLite work can move to `spawn_blocking`.
+    pub vec: Option<Arc<VecStore>>,
 }
 
 impl AppState {
     pub fn new() -> Self {
         let vec = match VecStore::open(config::index_db_path()) {
-            Ok(store) => Some(store),
+            Ok(store) => Some(Arc::new(store)),
             Err(e) => {
                 // Non-fatal: log and continue. `vector_search`/`build_index` will
                 // report VectorStoreUnavailable so the frontend falls back to
@@ -51,10 +52,10 @@ impl AppState {
         }
     }
 
-    /// Borrow the vector store, or a typed "unavailable" error the frontend can
-    /// recognise and recover from (lexical fallback).
-    fn vec(&self) -> Result<&VecStore, AppError> {
-        self.vec.as_ref().ok_or_else(|| {
+    /// Clone the vector store handle, or a typed "unavailable" error the frontend
+    /// can recognise and recover from (lexical fallback).
+    fn vec(&self) -> Result<Arc<VecStore>, AppError> {
+        self.vec.clone().ok_or_else(|| {
             AppError::vector_store_unavailable(
                 "The vector index is unavailable on this host; using lexical retrieval instead.",
             )
@@ -126,7 +127,14 @@ pub async fn stop_engine(state: State<'_, AppState>) -> Result<(), AppError> {
 #[tauri::command]
 pub async fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelEntry>, AppError> {
     let cfg = state.config.lock().await.clone();
-    let dir = std::path::PathBuf::from(&cfg.models_dir);
+    // Blocking directory reads stay off the async reactor.
+    tokio::task::spawn_blocking(move || list_models_sync(&cfg.models_dir))
+        .await
+        .map_err(|e| AppError::engine_error(format!("Model scan failed: {e}")))
+}
+
+fn list_models_sync(models_dir: &str) -> Vec<ModelEntry> {
+    let dir = std::path::PathBuf::from(models_dir);
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
@@ -151,7 +159,7 @@ pub async fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelEntry>, 
         }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(out)
+    out
 }
 
 /// Open the native file picker (IN RUST) and return the chosen `.json` graph's
@@ -338,7 +346,7 @@ pub async fn index_status(state: State<'_, AppState>) -> Result<IndexStatus, App
 async fn embed_and_index<F: FnMut(usize, usize)>(
     state: &AppState,
     source_id: &str,
-    chunks: &[Chunk],
+    chunks: Vec<Chunk>,
     mut on_progress: F,
 ) -> Result<IndexStatus, AppError> {
     let vec = state.vec()?;
@@ -374,25 +382,34 @@ async fn embed_and_index<F: FnMut(usize, usize)>(
         .filter(|d| *d > 0)
         .ok_or_else(|| AppError::embedding("Embedding engine returned empty vectors."))?;
 
-    let chunk_ids: Vec<String> = chunks.iter().map(stable_chunk_id).collect();
-    let indexed: Vec<IndexedChunk<'_>> = chunks
-        .iter()
-        .zip(embeddings.iter())
-        .zip(chunk_ids.iter())
-        .map(|((chunk, embedding), chunk_id)| IndexedChunk {
-            chunk_id,
-            embedding,
-            path: chunk.path.as_deref().unwrap_or(""),
-            kind: &chunk.kind,
-            line_start: chunk.line_start,
-            conv_id: chunk.conv_id.as_deref().unwrap_or(""),
-        })
-        .collect();
-    vec.replace_source(dim, source_id, &indexed)?;
+    // Bulk-inserting ~16k chunks is real SQLite work; run it off the async
+    // reactor. The closure owns every borrow `IndexedChunk` needs.
+    let source = source_id.to_string();
+    let chunk_count = chunks.len();
+    tokio::task::spawn_blocking(move || {
+        let chunk_ids: Vec<String> = chunks.iter().map(stable_chunk_id).collect();
+        let indexed: Vec<IndexedChunk<'_>> = chunks
+            .iter()
+            .zip(embeddings.iter())
+            .zip(chunk_ids.iter())
+            .map(|((chunk, embedding), chunk_id)| IndexedChunk {
+                chunk_id,
+                embedding,
+                path: chunk.path.as_deref().unwrap_or(""),
+                kind: &chunk.kind,
+                line_start: chunk.line_start,
+                conv_id: chunk.conv_id.as_deref().unwrap_or(""),
+            })
+            .collect();
+        vec.replace_source(dim, &source, &indexed)?;
+        Ok::<(), AppError>(())
+    })
+    .await
+    .map_err(|e| AppError::engine_error(format!("Index write failed: {e}")))??;
 
     Ok(IndexStatus {
         indexed: true,
-        count: chunks.len() as i64,
+        count: chunk_count as i64,
         dim: Some(dim),
     })
 }
@@ -404,7 +421,7 @@ pub async fn build_index(
     state: State<'_, AppState>,
     chunks: Vec<Chunk>,
 ) -> Result<IndexStatus, AppError> {
-    embed_and_index(state.inner(), "manual", &chunks, |_, _| {}).await
+    embed_and_index(state.inner(), "manual", chunks, |_, _| {}).await
 }
 
 /// Embed `query` (prefixed for nomic) and return the K nearest chunks, optionally
@@ -428,7 +445,11 @@ pub async fn vector_search(
         .into_iter()
         .next()
         .ok_or_else(|| AppError::embedding("No query embedding returned."))?;
-    store.knn(&emb, k, kind.as_deref())
+    // KNN runs on the vec0 virtual table (SQLite); keep it off the reactor.
+    let kind2 = kind.clone();
+    tokio::task::spawn_blocking(move || store.knn(&emb, k, kind2.as_deref()))
+        .await
+        .map_err(|e| AppError::engine_error(format!("Vector search failed: {e}")))?
 }
 
 /// Embed `query` once, then search both citation kinds against that same vector.
@@ -450,10 +471,15 @@ pub async fn retrieve_vector(
         .into_iter()
         .next()
         .ok_or_else(|| AppError::embedding("No query embedding returned."))?;
-    Ok(VectorRetrieval {
-        code_hits: store.knn(&emb, code_k, Some("code"))?,
-        conversation_hits: store.knn(&emb, conversation_k, Some("conversation"))?,
+    let retrieval = tokio::task::spawn_blocking(move || {
+        Ok::<VectorRetrieval, AppError>(VectorRetrieval {
+            code_hits: store.knn(&emb, code_k, Some("code"))?,
+            conversation_hits: store.knn(&emb, conversation_k, Some("conversation"))?,
+        })
     })
+    .await
+    .map_err(|e| AppError::engine_error(format!("Vector search failed: {e}")))??;
+    Ok(retrieval)
 }
 
 // ---- HuggingFace model download -------------------------------------------
@@ -613,6 +639,16 @@ async fn stream_to_file(
         .await
         .map_err(|e| AppError::config(format!("Could not create file: {e}")))?;
     let mut downloaded: u64 = 0;
+    // A 4 GB GGUF arrives as ~65k-250k 16-64 KB chunks; serializing one IPC
+    // event per chunk floods the webview. Emit at most ~200 progress events
+    // over the whole file (or one per 4 MB when the length is unknown), plus
+    // the final event via the Done variant.
+    let notify_step = if total > 0 {
+        total / 200
+    } else {
+        4 * 1024 * 1024
+    };
+    let mut next_notify = notify_step;
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.map_err(|e| AppError::engine_error(format!("Download error: {e}")))?;
@@ -620,16 +656,19 @@ async fn stream_to_file(
             .await
             .map_err(|e| AppError::config(format!("Write error: {e}")))?;
         downloaded += bytes.len() as u64;
-        let fraction = if total > 0 {
-            downloaded as f64 / total as f64
-        } else {
-            0.0
-        };
-        let _ = on_progress.send(DownloadEvent::Progress {
-            downloaded,
-            total,
-            fraction,
-        });
+        if downloaded >= next_notify || (total > 0 && downloaded == total) {
+            next_notify = downloaded + notify_step;
+            let fraction = if total > 0 {
+                downloaded as f64 / total as f64
+            } else {
+                0.0
+            };
+            let _ = on_progress.send(DownloadEvent::Progress {
+                downloaded,
+                total,
+                fraction,
+            });
+        }
     }
     file.flush()
         .await
@@ -1030,7 +1069,12 @@ async fn github_index_repo_inner(
     let _ = on_event.send(IndexEvent::Status {
         message: "Scanning files…".to_string(),
     });
-    let chunks = collect_repo_chunks(&dest);
+    // Walking up to 4,000 files / 64 MB is blocking fs work; keep it off the
+    // async reactor.
+    let scan_root = dest.clone();
+    let chunks = tokio::task::spawn_blocking(move || collect_repo_chunks(&scan_root))
+        .await
+        .map_err(|e| AppError::engine_error(format!("Repo scan failed: {e}")))?;
     // The clone has been read into memory; remove it now (don't keep a copy).
     let _ = tokio::fs::remove_dir_all(&dest).await;
 
@@ -1044,7 +1088,7 @@ async fn github_index_repo_inner(
     let status = embed_and_index(
         state,
         &format!("github:{}", full_name.to_ascii_lowercase()),
-        &chunks,
+        chunks,
         move |done, total| {
             let fraction = if total > 0 {
                 done as f64 / total as f64
@@ -1329,7 +1373,7 @@ async fn slack_index_inner(
     }
 
     let ev = on_event.clone();
-    let status = embed_and_index(state, "slack", &chunks, move |done, total| {
+    let status = embed_and_index(state, "slack", chunks, move |done, total| {
         let fraction = if total > 0 {
             done as f64 / total as f64
         } else {
@@ -1592,7 +1636,7 @@ async fn email_index_inner(
     }
 
     let ev = on_event.clone();
-    let status = embed_and_index(state, source, &chunks, move |done, total| {
+    let status = embed_and_index(state, source, chunks, move |done, total| {
         let fraction = if total > 0 {
             done as f64 / total as f64
         } else {
@@ -1639,18 +1683,18 @@ async fn collect_gmail_chunks(
         let ids = email::gmail_list_message_ids(&client, &token, label.as_deref())
             .await
             .map_err(AppError::email)?;
-        let total = ids.len();
-        for (i, id) in ids.iter().enumerate() {
-            let rec = email::gmail_get_message(&client, &token, id)
-                .await
-                .map_err(AppError::email)?;
+        // One request per message was 500 sequential round trips per label;
+        // fetch with bounded concurrency instead.
+        let recs = email::gmail_get_messages(&client, &token, &ids, |done, total| {
+            let _ = on_event.send(IndexEvent::Status {
+                message: format!("Fetched {done}/{total} Gmail messages…"),
+            });
+        })
+        .await
+        .map_err(AppError::email)?;
+        for rec in recs {
             let (conv_id, text) = email::message_chunk(&rec);
             chunks.push(conversation_chunk(conv_id, text));
-            if i % 25 == 0 {
-                let _ = on_event.send(IndexEvent::Status {
-                    message: format!("Fetched {}/{total} Gmail messages…", i + 1),
-                });
-            }
         }
     }
     Ok(chunks)

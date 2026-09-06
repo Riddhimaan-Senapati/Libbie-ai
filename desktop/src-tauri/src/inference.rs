@@ -209,7 +209,7 @@ pub async fn stream_chat(
     let resp = ensure_success(resp, "Provider").await?;
 
     let anthropic = target.anthropic;
-    let mut buf = String::new();
+    let mut buf: Vec<u8> = Vec::new();
     let mut stream = resp.bytes_stream();
     let mut finish_reason = "stop".to_string();
 
@@ -248,11 +248,21 @@ pub async fn stream_chat(
 
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.map_err(|e| AppError::engine_error(format!("Stream error: {e}")))?;
-        buf.push_str(&String::from_utf8_lossy(&bytes));
+        buf.extend_from_slice(&bytes);
 
-        while let Some(pos) = buf.find('\n') {
-            let line = buf[..pos].trim().to_string();
-            buf.drain(..=pos);
+        // Only decode complete lines: lossy-decoding each raw chunk corrupts a
+        // multi-byte character split across the boundary. A parse index avoids
+        // draining per line (a drain memmoves the whole tail, O(n^2) over a
+        // long stream); the consumed prefix is trimmed once per chunk.
+        let mut consumed = 0;
+        loop {
+            let Some(nl) = buf[consumed..].iter().position(|&b| b == b'\n') else {
+                break;
+            };
+            let line = std::str::from_utf8(&buf[consumed..consumed + nl])
+                .unwrap_or_default()
+                .trim();
+            consumed += nl + 1;
             let Some(data) = line.strip_prefix("data:") else {
                 continue; // ignore `event:` and comment lines
             };
@@ -391,6 +401,9 @@ pub async fn stream_chat(
                     }
                 }
             }
+        }
+        if consumed > 0 {
+            buf.drain(..consumed);
         }
     }
 

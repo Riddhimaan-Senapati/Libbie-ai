@@ -1,5 +1,4 @@
 import * as React from "react";
-import { motion } from "motion/react";
 import { FileCode2 } from "lucide-react";
 
 import type { CodeFile, CodeRef } from "@/lib/types";
@@ -17,7 +16,7 @@ export function refToFocus(ref: CodeRef, nonce: number): CanvasFocus {
   return { lineStart: ref.lineStart, lineEnd: ref.lineEnd, symbol: ref.symbol, nonce };
 }
 
-export function CodeCanvas({
+export const CodeCanvas = React.memo(function CodeCanvas({
   file,
   focus,
   onLineClick,
@@ -71,13 +70,9 @@ export function CodeCanvas({
                 )}
               >
                 {cited && (
-                  <motion.span
+                  <span
                     key={focus?.nonce}
-                    layoutId="cite-marker"
-                    className="absolute inset-y-0 left-0 w-[3px] bg-primary"
-                    initial={{ opacity: 0.3, scaleY: 0.6 }}
-                    animate={{ opacity: 1, scaleY: 1 }}
-                    transition={{ duration: 0.3 }}
+                    className="animate-cite-marker absolute inset-y-0 left-0 w-[3px] bg-primary"
                     aria-hidden
                   />
                 )}
@@ -104,4 +99,5 @@ export function CodeCanvas({
       </div>
     </div>
   );
-}
+});
+

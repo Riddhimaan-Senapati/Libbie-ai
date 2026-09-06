@@ -1,5 +1,5 @@
 import * as React from "react";
-import { motion } from "motion/react";
+import { m as motion } from "motion/react";
 import {
   Code2,
   MessageSquareText,
@@ -12,6 +12,7 @@ import {
 import type { CodeRef } from "@/lib/types";
 import type { Retrieved } from "@/lib/rag";
 import { getCodeFile } from "@/lib/data";
+import { verdictStore } from "@/lib/verdictStore";
 import { cn } from "@/lib/utils";
 import { LibbieAvatar } from "@/components/LibbieAvatar";
 
@@ -24,7 +25,6 @@ const KIND_LABEL: Record<string, string> = {
 
 export function AnswerSurface({
   question,
-  verdict,
   streaming,
   retrieved,
   view,
@@ -34,7 +34,6 @@ export function AnswerSurface({
   engineLabel,
 }: {
   question: string;
-  verdict: string;
   streaming: boolean;
   retrieved: Retrieved;
   view: "technical" | "executive";
@@ -46,6 +45,9 @@ export function AnswerSurface({
   const [openConv, setOpenConv] = React.useState<string | null>(
     retrieved.conversations[0]?.id ?? null,
   );
+  // The streamed text lives in the verdict store, so tokens re-render only
+  // this paragraph, not the workspace around it.
+  const verdict = React.useSyncExternalStore(verdictStore.subscribe, verdictStore.get);
 
   return (
     <motion.div
