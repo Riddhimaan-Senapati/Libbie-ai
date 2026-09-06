@@ -9,11 +9,16 @@ the briefing's honest-gaps section. Wrong edges are worse than missing edges.
 
 from __future__ import annotations
 
-from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, Optional
 
 from ..config import Config
 from ..llm.base import LLMBackend
 from ..models import Edge, EdgeStatus, EvidenceSpan, Graph
+
+# Overlapped HTTP round trips against a real backend. The mock backend stays
+# synchronous so tests remain deterministic.
+_ADJUDICATION_WORKERS = 6
 
 ADJUDICATION_SCHEMA = {
     "type": "object",
@@ -65,7 +70,7 @@ def _node_line(graph: Graph, node_id: str) -> str:
     return f"[{n.kind}] " + ", ".join(parts)
 
 
-def _prompt(graph: Graph, edge: Edge) -> str:
+def _prompt(line_for: Callable[[str], str], edge: Edge) -> str:
     meaning = _EDGE_MEANING.get(edge.type.value, edge.type.value)
     ev = "\n".join(
         f"  - {s.quote}" for s in edge.evidence_spans if s.quote
@@ -74,8 +79,8 @@ def _prompt(graph: Graph, edge: Edge) -> str:
         "You are adjudicating one candidate edge in a scientific provenance graph. "
         "Decide whether the relationship truly holds, based ONLY on the evidence.\n\n"
         f"Relationship under test: {meaning}.\n\n"
-        f"SOURCE: {_node_line(graph, edge.src)}\n"
-        f"TARGET: {_node_line(graph, edge.dst)}\n\n"
+        f"SOURCE: {line_for(edge.src)}\n"
+        f"TARGET: {line_for(edge.dst)}\n\n"
         f"Evidence:\n{ev}\n\n"
         f"SELF_CHECK_PRIOR={edge.confidence}\n\n"
         "Return JSON {accept: bool, confidence: 0..1, rationale: string, spans: [{artifact, quote}]}. "
@@ -92,20 +97,27 @@ def score_and_commit(
 ) -> dict:
     """Adjudicate every candidate, commit above threshold, return a summary."""
     threshold = cfg.join.commit_threshold
-    committed = hypothesis = 0
+
+    # Candidates share endpoints heavily; describe each node once.
+    node_lines: dict[str, str] = {}
     for edge in candidates:
+        for nid in (edge.src, edge.dst):
+            if nid not in node_lines:
+                node_lines[nid] = _node_line(graph, nid)
+    line_for = node_lines.__getitem__
+
+    def _adjudicate(edge: Edge) -> None:
         prior = edge.confidence
         try:
-            verdict = backend.complete(_prompt(graph, edge), schema=ADJUDICATION_SCHEMA, role="adjudicate")
+            verdict = backend.complete(
+                _prompt(line_for, edge), schema=ADJUDICATION_SCHEMA, role="adjudicate"
+            )
         except Exception:  # backend down -> fall back to the prior, mark hypothesis
             # Do not persist raw exception text (endpoints, keys) into the graph /
             # briefing; keep a generic note and log details out-of-band.
             edge.rationale = f"{edge.rationale} (adjudication unavailable; using candidate prior)".strip()
             edge.status = EdgeStatus.committed if prior >= threshold else EdgeStatus.hypothesis
-            _tally(edge, graph)
-            committed += edge.status == EdgeStatus.committed
-            hypothesis += edge.status == EdgeStatus.hypothesis
-            continue
+            return
 
         conf = float(verdict.get("confidence", prior))
         accept = bool(verdict.get("accept", conf >= threshold))
@@ -118,6 +130,17 @@ def score_and_commit(
         edge.status = (
             EdgeStatus.committed if (accept and conf >= threshold) else EdgeStatus.hypothesis
         )
+
+    if cfg.llm.backend != "mock" and len(candidates) > 1:
+        # Each thread mutates only its own edge; the graph is touched afterwards.
+        with ThreadPoolExecutor(max_workers=_ADJUDICATION_WORKERS) as pool:
+            list(pool.map(_adjudicate, candidates))
+    else:
+        for edge in candidates:
+            _adjudicate(edge)
+
+    committed = hypothesis = 0
+    for edge in candidates:
         _tally(edge, graph)
         committed += edge.status == EdgeStatus.committed
         hypothesis += edge.status == EdgeStatus.hypothesis

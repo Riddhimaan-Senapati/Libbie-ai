@@ -7,6 +7,7 @@ job and point the engine at it -- no data leaves the cluster.
 
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 import httpx
@@ -48,7 +49,7 @@ class LocalBackend:
                 prompt
                 + "\n\nRespond with ONLY a single JSON object conforming to this schema, "
                 "no prose, no code fence:\n"
-                + _schema_hint(schema)
+                + json.dumps(schema, indent=2)
             )
         resp = self._client.post(
             "/chat/completions",
@@ -72,9 +73,3 @@ class LocalBackend:
         resp.raise_for_status()
         data = sorted(resp.json()["data"], key=lambda d: d["index"])
         return [d["embedding"] for d in data]
-
-
-def _schema_hint(schema: dict) -> str:
-    import json
-
-    return json.dumps(schema, indent=2)

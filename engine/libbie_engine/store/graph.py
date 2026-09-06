@@ -7,8 +7,9 @@ here needs a database to run.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
+
+import msgspec
 
 from ..models import Graph
 
@@ -22,7 +23,7 @@ class GraphStore:
     def load(self) -> Graph:
         if not self.path.exists():
             return Graph()
-        data = json.loads(self.path.read_text(encoding="utf-8"))
+        data = msgspec.json.decode(self.path.read_bytes())
         return Graph.model_validate(data)
 
     def save(self, graph: Graph) -> None:

@@ -29,7 +29,7 @@ avoid the common copyleft traps in this problem space:
 | Task | We use (permissive) | We avoid (copyleft/restrictive) |
 |---|---|---|
 | PDF extraction | `pypdf` (BSD-3) | PyMuPDF/`fitz` (**AGPL-3.0**) |
-| git ingestion | `GitPython` (BSD-3) | `pygit2`/libgit2 (**GPL-2.0** w/ linking exception) |
+| git ingestion | `git` binary via `subprocess` | `pygit2`/libgit2 (**GPL-2.0** w/ linking exception), GitPython (per-commit subprocess spawns) |
 | LLM client | `httpx` (BSD-3) direct | — |
 
 Model **weights** named in the plan carry their own terms: Qwen3 (Apache-2.0),

@@ -7,8 +7,7 @@ to type into ``github.com/login/device`` on any device.
 
 Dependency stance mirrors the rest of the engine -- PERMISSIVE ONLY. We talk to
 the GitHub REST API directly with ``httpx`` (BSD-3, already a dep) and clone with
-the ``git`` binary via ``subprocess`` (GitPython, BSD-3, is the engine's optional
-git dep but is not required for cloning). We deliberately avoid PyGithub (LGPL)
+the ``git`` binary via ``subprocess``. We deliberately avoid PyGithub (LGPL)
 and pygit2/libgit2 (GPL-with-linking-exception).
 
 Security notes
@@ -62,11 +61,6 @@ _GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 _API_VERSION = "2022-11-28"
 
 _TIMEOUT = httpx.Timeout(30.0, connect=10.0)
-
-# Token storage identifiers (OS keyring service/account; file fallback name).
-_KEYRING_SERVICE = "libbie"
-_KEYRING_ACCOUNT = "github"
-_TOKEN_FILENAME = ".github_token"
 
 # owner/repo -- letters, digits, dot, underscore, hyphen only (no traversal).
 _FULL_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
@@ -352,62 +346,61 @@ def clone_repo(
             pass
 
 
-# --------------------------------------------------------------------------- #
-# Token storage (OS keyring if available; else a 0600 file under the store)
-# --------------------------------------------------------------------------- #
-def _token_file(store_root: "str | Path") -> Path:
-    return Path(store_root) / _TOKEN_FILENAME
+def update_repo(
+    full_name: str,
+    token: str,
+    dest_dir: "str | Path",
+    rev: Optional[str] = None,
+) -> Path:
+    """Refresh an existing shallow clone in place (``fetch`` + ``reset``).
 
+    Re-cloning on every ingest re-downloads the whole tree; fetching just the
+    new tip is much cheaper for repeat ingests. Same security stance as
+    :func:`clone_repo`: token-less URL, ephemeral GIT_ASKPASS helper removed in
+    a ``finally``, token only ever in the child environment. Raises
+    :class:`ValueError` for a malformed ``full_name`` and :class:`GitHubError`
+    when ``dest_dir`` is not a git repo or a git step fails.
+    """
+    if not _FULL_NAME_RE.match(full_name):
+        raise ValueError(
+            f"invalid repository {full_name!r}; expected 'owner/repo'"
+        )
+    dest = Path(dest_dir)
+    if not (dest / ".git").exists():
+        raise GitHubError(f"cannot update {dest}: not a git repository")
 
-def save_token(token: str, store_root: "str | Path") -> None:
-    """Persist the token in the OS keyring if available, else a 0600 file."""
+    url = f"https://github.com/{full_name}.git"
+    askpass = _write_askpass()
     try:
-        import keyring  # optional; MIT
+        env = dict(os.environ)
+        env["GIT_ASKPASS"] = str(askpass)
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env[_ASKPASS_TOKEN_ENV] = token
 
-        keyring.set_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT, token)
-        return
-    except Exception:
-        pass  # fall through to the file store
+        steps = [
+            (
+                "fetch",
+                [
+                    "git", "-c", "credential.helper=", "-c", "credential.useHttpPath=false",
+                    "-C", str(dest), "fetch", "--depth", "1", "--force", url, rev or "HEAD",
+                ],
+            ),
+            ("reset", ["git", "-C", str(dest), "reset", "--hard", "FETCH_HEAD"]),
+        ]
+        for label, cmd in steps:
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+            except (FileNotFoundError, OSError) as exc:
+                raise GitHubError(f"could not run git: {exc}") from exc
+            if proc.returncode != 0:
+                # git's stderr does not contain the token (askpass hides it).
+                raise GitHubError(
+                    f"git {label} of {full_name} failed: {proc.stderr.strip()}"
+                )
+        return dest
+    finally:
+        try:
+            askpass.unlink()
+        except OSError:
+            pass
 
-    root = Path(store_root)
-    root.mkdir(parents=True, exist_ok=True)
-    path = _token_file(root)
-    path.write_text(token, encoding="utf-8")
-    try:
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
-    except OSError:
-        pass  # best-effort on filesystems without POSIX perms (e.g. Windows)
-
-
-def load_token(store_root: "str | Path") -> Optional[str]:
-    """Load a stored token (keyring first, then the file), or ``None``."""
-    try:
-        import keyring  # optional; MIT
-
-        token = keyring.get_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
-        if token:
-            return token
-    except Exception:
-        pass
-
-    path = _token_file(store_root)
-    if path.exists():
-        text = path.read_text(encoding="utf-8").strip()
-        return text or None
-    return None
-
-
-def clear_token(store_root: "str | Path") -> None:
-    """Remove any stored token from both the keyring and the file store."""
-    try:
-        import keyring  # optional; MIT
-
-        keyring.delete_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
-    except Exception:
-        pass
-
-    path = _token_file(store_root)
-    try:
-        path.unlink()
-    except OSError:
-        pass

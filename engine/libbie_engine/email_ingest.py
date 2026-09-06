@@ -28,11 +28,13 @@ import os
 from datetime import datetime
 from email import message_from_bytes, policy
 from email.message import EmailMessage
-from email.utils import getaddresses, parsedate_to_datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, Optional
 
 from .ingest.base import person_node
 from .ingest.conversation import (
+    eml_body_text,
+    first_address,
     immediate_parent,
     normalize_message_id,
     resolve_thread_roots,
@@ -41,6 +43,12 @@ from .models import Message, Node, Provenance, make_id
 
 # Gmail read-only scope.
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+# Mailbox bound when no explicit limit is given (matches MAX_COMMITS in the git
+# ingester), and the number of messages fetched per IMAP round trip.
+MAX_MESSAGES = 500
+_FETCH_CHUNK = 100
+_GMAIL_BATCH = 50
 
 
 class EmailConnectorError(Exception):
@@ -74,19 +82,6 @@ class _ParsedEmail:
         self.provenance = provenance
 
 
-def _first_address(header_value: Optional[str]) -> tuple[Optional[str], Optional[str]]:
-    """``(display_name, email)`` for the first address in a header, else (None, None)."""
-    if not header_value:
-        return None, None
-    parsed = getaddresses([str(header_value)])
-    for name, email in parsed:
-        if email:
-            return (name or None), email
-    if parsed:
-        return (parsed[0][0] or None), None
-    return None, None
-
-
 def _parse_date(raw: Optional[str]) -> Optional[datetime]:
     if not raw:
         return None
@@ -96,33 +91,13 @@ def _parse_date(raw: Optional[str]) -> Optional[datetime]:
         return None
 
 
-def _body_text(message: EmailMessage) -> str:
-    """Plain-text body from a parsed email, defensively."""
-    try:
-        if message.is_multipart():
-            for part in message.walk():
-                if part.get_content_type() == "text/plain":
-                    return part.get_content()
-            body = message.get_body(preferencelist=("plain", "html"))
-            return body.get_content() if body is not None else ""
-        return message.get_content()
-    except Exception:  # pragma: no cover - malformed MIME must not break ingest
-        try:
-            payload = message.get_payload(decode=True)
-            if isinstance(payload, bytes):
-                return payload.decode("utf-8", errors="replace")
-            return str(payload or "")
-        except Exception:
-            return ""
-
-
 def _parsed_from_email_message(
     message: EmailMessage, *, source: str, path: str, blob_hash: Optional[str] = None
 ) -> _ParsedEmail:
     """Build a :class:`_ParsedEmail` from a parsed ``email`` message object."""
-    from_name, from_email = _first_address(message.get("From"))
+    from_name, from_email = first_address(message.get("From"))
     subject = message.get("Subject") or ""
-    body = _body_text(message)
+    body = eml_body_text(message)
     text = f"{subject}\n{body}" if subject else body
 
     own_id = normalize_message_id(message.get("Message-ID")) or f"path:{path}"
@@ -195,7 +170,8 @@ def ingest_imap(
 
     Connects over TLS, logs in with an APP PASSWORD (never the account password),
     fetches messages matching ``search`` (an IMAP search key, default ``ALL``),
-    and reconstructs threads by root. ``limit`` keeps only the most recent N.
+    and reconstructs threads by root. ``limit`` keeps only the most recent N
+    (default: :data:`MAX_MESSAGES`).
     """
     import imaplib
     import ssl
@@ -220,30 +196,34 @@ def ingest_imap(
         if typ != "OK" or not data or not data[0]:
             return []
         ids = data[0].split()
-        if limit is not None and limit >= 0:
-            ids = ids[-limit:]
+        if limit is None:
+            limit = MAX_MESSAGES
+        if limit >= 0:
+            ids = ids[-limit:] if limit else []
 
+        # One ranged FETCH per chunk instead of one round trip per message.
         parsed: list[_ParsedEmail] = []
-        for num in ids:
-            typ, msg_data = conn.fetch(num, "(RFC822)")
+        for start in range(0, len(ids), _FETCH_CHUNK):
+            chunk = ids[start : start + _FETCH_CHUNK]
+            typ, msg_data = conn.fetch(b",".join(chunk), "(RFC822.PEEK)")
             if typ != "OK" or not msg_data:
                 continue
-            raw = next(
-                (part[1] for part in msg_data if isinstance(part, tuple) and part[1]),
-                None,
-            )
-            if not raw:
-                continue
-            try:
-                message = message_from_bytes(raw, policy=policy.default)
-            except Exception:  # pragma: no cover - unparseable message
-                continue
-            uid = num.decode() if isinstance(num, bytes) else str(num)
-            parsed.append(
-                _parsed_from_email_message(
-                    message, source="imap", path=f"imap://{host}/{mailbox}/{uid}"
+            for part in msg_data:
+                if not (isinstance(part, tuple) and part[1]):
+                    continue
+                # part[0] looks like b"12 (RFC822.PEEK {4321}"; the leading
+                # integer is the message's sequence number.
+                seq = part[0].split(b" ", 1)[0]
+                uid = seq.decode() if isinstance(seq, bytes) else str(seq)
+                try:
+                    message = message_from_bytes(part[1], policy=policy.default)
+                except Exception:  # pragma: no cover - unparseable message
+                    continue
+                parsed.append(
+                    _parsed_from_email_message(
+                        message, source="imap", path=f"imap://{host}/{mailbox}/{uid}"
+                    )
                 )
-            )
     finally:
         try:
             conn.logout()
@@ -343,7 +323,7 @@ def _parsed_from_gmail(msg: dict[str, Any]) -> _ParsedEmail:
     """Build a :class:`_ParsedEmail` from a Gmail ``format=full`` message dict."""
     payload = msg.get("payload") or {}
     hdrs = _gmail_headers(payload)
-    from_name, from_email = _first_address(hdrs.get("from"))
+    from_name, from_email = first_address(hdrs.get("from"))
     subject = hdrs.get("subject", "")
     body = _gmail_body_text(payload)
     text = f"{subject}\n{body}" if subject else body
@@ -400,10 +380,22 @@ def ingest_gmail(
         req = msgs_api.list_next(req, resp)
     ids = ids[:max_results]
 
-    # 2) Fetch each full message and parse.
-    parsed: list[_ParsedEmail] = []
-    for mid in ids:
-        full = msgs_api.get(userId="me", id=mid, format="full").execute()
-        parsed.append(_parsed_from_gmail(full))
+    # 2) Fetch full messages in batches (a per-message request made indexing a
+    # 500-message mailbox 500 sequential round trips) and parse.
+    fetched: dict[str, dict[str, Any]] = {}
 
+    def _on_batch_response(request_id: str, response: Any, exc: Any) -> None:
+        if exc is None and response:
+            fetched[str(response.get("id"))] = response
+
+    for start in range(0, len(ids), _GMAIL_BATCH):
+        batch = service.new_batch_http_request()
+        for mid in ids[start : start + _GMAIL_BATCH]:
+            batch.add(
+                msgs_api.get(userId="me", id=mid, format="full"),
+                callback=_on_batch_response,
+            )
+        batch.execute()
+
+    parsed = [_parsed_from_gmail(fetched[mid]) for mid in ids if mid in fetched]
     return _nodes_from_parsed(parsed, source="gmail")

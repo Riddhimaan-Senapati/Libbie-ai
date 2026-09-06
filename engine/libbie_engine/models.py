@@ -24,7 +24,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any, Literal, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 def make_id(kind: str, *parts: Any) -> str:
@@ -254,6 +254,11 @@ class Graph(BaseModel):
     nodes: dict[str, AnyNode] = Field(default_factory=dict)
     edges: list[Edge] = Field(default_factory=list)
 
+    # (src, dst, type) -> position in ``edges``. Built lazily on the first
+    # ``add_edge`` (so a graph restored via model_validate rebuilds on demand).
+    # Keep ``edges`` mutations inside ``add_edge`` or the index goes stale.
+    _edge_index: Optional[dict[tuple[str, str, EdgeType], int]] = PrivateAttr(default=None)
+
     def add_node(self, node: Node) -> str:
         """Insert (or de-duplicate) a node; returns its id."""
         if node.id not in self.nodes:
@@ -263,12 +268,18 @@ class Graph(BaseModel):
     def add_edge(self, edge: Edge) -> None:
         """Insert an edge, de-duplicating on (src, dst, type). Keeps the
         higher-confidence copy so re-running the join layer is idempotent."""
-        for i, e in enumerate(self.edges):
-            if e.src == edge.src and e.dst == edge.dst and e.type == edge.type:
-                if edge.confidence >= e.confidence:
-                    self.edges[i] = edge
-                return
+        idx = self._edge_index
+        if idx is None:
+            idx = {(e.src, e.dst, e.type): i for i, e in enumerate(self.edges)}
+            self._edge_index = idx
+        key = (edge.src, edge.dst, edge.type)
+        i = idx.get(key)
+        if i is not None:
+            if edge.confidence >= self.edges[i].confidence:
+                self.edges[i] = edge
+            return
         self.edges.append(edge)
+        idx[key] = len(self.edges) - 1
 
     def nodes_of(self, kind: str) -> list[Node]:
         return [n for n in self.nodes.values() if n.kind == kind]

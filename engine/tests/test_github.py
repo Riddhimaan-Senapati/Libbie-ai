@@ -15,6 +15,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from libbie_engine import credentials as cred
 from libbie_engine import github as gh
 
 
@@ -191,6 +192,36 @@ def test_build_clone_command_rev_becomes_branch(tmp_path):
     assert "--branch" in cmd and cmd[cmd.index("--branch") + 1] == "dev"
 
 
+def test_update_repo_keeps_token_out_of_argv(tmp_path, monkeypatch):
+    dest = tmp_path / "dest"
+    (dest / ".git").mkdir(parents=True)
+    calls: list[list[str]] = []
+
+    class _Proc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, capture_output, text, env):
+        calls.append(list(cmd))
+        return _Proc()
+
+    monkeypatch.setattr(gh.subprocess, "run", fake_run)
+    out = gh.update_repo("owner/repo", "tok", dest, rev="dev")
+    assert out == dest
+    assert len(calls) == 2
+    for argv in calls:
+        assert "tok" not in argv
+    fetch = next(argv for argv in calls if "fetch" in argv)
+    assert "-c" in fetch and "credential.helper=" in fetch
+    assert any("reset" in argv and "FETCH_HEAD" in argv for argv in calls)
+
+
+def test_update_repo_rejects_non_git_dir(tmp_path):
+    with pytest.raises(gh.GitHubError):
+        gh.update_repo("owner/repo", "tok", tmp_path / "notarepo")
+
+
 # --------------------------------------------------------------------------- #
 # token storage (file fallback under the store root)
 # --------------------------------------------------------------------------- #
@@ -198,9 +229,9 @@ def test_token_storage_roundtrip_file_fallback(tmp_path, monkeypatch):
     # Force the file fallback regardless of whether `keyring` is installed.
     monkeypatch.setitem(__import__("sys").modules, "keyring", None)
 
-    assert gh.load_token(tmp_path) is None
-    gh.save_token("ghu_stored", tmp_path)
-    assert gh.load_token(tmp_path) == "ghu_stored"
-    assert (tmp_path / gh._TOKEN_FILENAME).exists()
-    gh.clear_token(tmp_path)
-    assert gh.load_token(tmp_path) is None
+    assert cred.load_token("github", tmp_path) is None
+    cred.save_token("github", "ghu_stored", tmp_path)
+    assert cred.load_token("github", tmp_path) == "ghu_stored"
+    assert (tmp_path / ".github_token").exists()
+    cred.clear_token("github", tmp_path)
+    assert cred.load_token("github", tmp_path) is None

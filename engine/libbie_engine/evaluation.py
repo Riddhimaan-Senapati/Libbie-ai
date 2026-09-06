@@ -34,7 +34,7 @@ def _text_of(node: Node) -> str:
     return " ".join(parts)
 
 
-def _matches(node: Optional[Node], desc: dict) -> bool:
+def _matches(node: Optional[Node], desc: dict, node_texts: dict[str, str]) -> bool:
     if node is None:
         return False
     if desc.get("kind") and node.kind != desc["kind"]:
@@ -43,7 +43,7 @@ def _matches(node: Optional[Node], desc: dict) -> bool:
         if k == "kind":
             continue
         if k == "contains":
-            if v.lower() not in _text_of(node).lower():
+            if v.lower() not in node_texts[node.id].lower():
                 return False
         else:
             attr = getattr(node, k, None)
@@ -107,14 +107,20 @@ def run_eval(graph: Graph, gold_path: Optional[str] = None) -> EvalReport:
     gold = json.loads(path.read_text(encoding="utf-8")).get("edges", [])
     report = EvalReport()
 
+    # The gold scan re-checks the same nodes and edge pool per entry; index both
+    # once instead of dumping node text and scanning all edges per gold edge.
+    node_texts = {nid: _text_of(n) for nid, n in graph.nodes.items()}
+    committed_by_type: dict[str, list] = defaultdict(list)
+    for e in graph.edges:
+        if e.status == EdgeStatus.committed:
+            committed_by_type[e.type.value].append(e)
+
     for g in gold:
         etype = g["type"]
         committed = any(
-            e.type.value == etype
-            and e.status == EdgeStatus.committed
-            and _matches(graph.nodes.get(e.src), g["src"])
-            and _matches(graph.nodes.get(e.dst), g["dst"])
-            for e in graph.edges
+            _matches(graph.nodes.get(e.src), g["src"], node_texts)
+            and _matches(graph.nodes.get(e.dst), g["dst"], node_texts)
+            for e in committed_by_type.get(etype, [])
         )
         score = report.per_type[etype]
         label = g.get("label", True)

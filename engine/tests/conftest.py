@@ -43,20 +43,12 @@ def ingested() -> Graph:
 
 
 @pytest.fixture(scope="session")
-def built() -> Graph:
+def built(ingested: Graph) -> Graph:
     """Fully joined graph on the offline mock backend (deterministic).
 
-    Built independently of the ``ingested`` fixture so join mutation doesn't leak
-    into pre-join assertions."""
-    g = Graph()
-    for n in ingest_hpc(str(SAMPLE / "hpc")):
-        g.add_node(n)
-    for n in ingest_git(str(REPO_ROOT)):
-        g.add_node(n)
-    for n in ingest_conversations(str(SAMPLE / "conversations")):
-        g.add_node(n)
-    for n in ingest_literature(str(SAMPLE / "literature")):
-        g.add_node(n)
+    Derived from a deep copy of ``ingested`` so join mutation doesn't leak
+    into pre-join assertions without paying for a second ingest pass."""
+    g = ingested.model_copy(deep=True)
     cfg = Config()  # backend defaults to mock
     run_join(g, build_backend(cfg), cfg)
     return g

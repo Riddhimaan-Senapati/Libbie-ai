@@ -10,6 +10,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from libbie_engine import credentials as cred
 from libbie_engine import slack as sl
 from libbie_engine.models import Message, Person
 
@@ -211,9 +212,9 @@ def test_exchange_code_raises_without_user_token():
 # --------------------------------------------------------------------------- #
 def test_token_storage_roundtrip_file_fallback(tmp_path, monkeypatch):
     monkeypatch.setitem(__import__("sys").modules, "keyring", None)
-    assert sl.load_token(tmp_path) is None
-    sl.save_token("xoxp-stored", tmp_path)
-    assert sl.load_token(tmp_path) == "xoxp-stored"
-    assert (tmp_path / sl._TOKEN_FILENAME).exists()
-    sl.clear_token(tmp_path)
-    assert sl.load_token(tmp_path) is None
+    assert cred.load_token("slack", tmp_path) is None
+    cred.save_token("slack", "xoxp-stored", tmp_path)
+    assert cred.load_token("slack", tmp_path) == "xoxp-stored"
+    assert (tmp_path / ".slack_token").exists()
+    cred.clear_token("slack", tmp_path)
+    assert cred.load_token("slack", tmp_path) is None

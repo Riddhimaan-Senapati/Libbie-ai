@@ -33,16 +33,15 @@ are persisted via the OS keyring when available, else a 0600 file under the stor
 from __future__ import annotations
 
 import os
-import stat
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable, Optional
 
 import httpx
 from pydantic import BaseModel
 
 from .ingest.base import person_node
+from .ingest.conversation import slack_user_email
 from .models import Message, Node, Provenance, make_id
 
 # --------------------------------------------------------------------------- #
@@ -62,10 +61,8 @@ _USER_SCOPES = (
 # All conversation kinds the user can belong to.
 _CONV_TYPES = "public_channel,private_channel,mpim,im"
 
-# Token storage (OS keyring service/account; file fallback name).
-_KEYRING_SERVICE = "libbie"
-_KEYRING_ACCOUNT = "slack"
-_TOKEN_FILENAME = ".slack_token"
+# Per-channel history bound (matches MAX_COMMITS in the git ingester).
+MAX_MESSAGES = 500
 
 # Slack requires a *registered* redirect URL, so the loopback port is FIXED.
 _DEFAULT_REDIRECT_PORT = 3118
@@ -121,13 +118,14 @@ def redirect_uri(port: Optional[int] = None) -> str:
 # --------------------------------------------------------------------------- #
 # Low-level Web API call (slack_sdk if importable, else httpx; 429-aware)
 # --------------------------------------------------------------------------- #
-def _has_slack_sdk() -> bool:
+def _web_client(token: str) -> Optional[Any]:
+    """A ``slack_sdk`` ``WebClient`` when the SDK is importable, else ``None``."""
     try:
-        import slack_sdk  # noqa: F401  (MIT)
+        from slack_sdk import WebClient  # MIT
 
-        return True
+        return WebClient(token=token)
     except Exception:
-        return False
+        return None
 
 
 def _call(
@@ -137,49 +135,54 @@ def _call(
     *,
     transport: "httpx.BaseTransport | None" = None,
     sleep: Callable[[float], None] = time.sleep,
+    client: Optional[Any] = None,
 ) -> dict[str, Any]:
     """One Slack Web API method call, returning the parsed JSON ``dict``.
 
     Uses ``slack_sdk``'s ``WebClient`` when it is importable AND no explicit
-    ``transport`` is given (production). Otherwise -- and always in tests, which
-    inject an ``httpx`` transport -- talks to the REST endpoint directly with
-    ``httpx``, honoring ``Retry-After`` on HTTP 429. Raises :class:`SlackError`
-    when Slack replies ``ok: false``.
+    ``transport`` is given (production) -- pass ``client`` to reuse one
+    ``WebClient`` across a whole ingest run. Otherwise -- and always in tests,
+    which inject an ``httpx`` transport -- talks to the REST endpoint directly
+    with ``httpx``, honoring ``Retry-After`` on HTTP 429. Raises
+    :class:`SlackError` when Slack replies ``ok: false``.
     """
     params = {k: v for k, v in (params or {}).items() if v is not None}
 
-    if transport is None and _has_slack_sdk():
-        try:
-            from slack_sdk import WebClient
+    if transport is None:
+        web = client if client is not None else _web_client(token)
+        if web is not None:
             from slack_sdk.errors import SlackApiError
 
-            client = WebClient(token=token)
-            resp = client.api_call(method, http_verb="GET", params=params)
-            data = dict(resp.data)
-        except SlackApiError as exc:  # pragma: no cover - needs live sdk+network
-            data = dict(getattr(exc.response, "data", {}) or {})
-            if not data:
-                raise SlackError(str(exc)) from exc
-    else:
-        headers = {"Authorization": f"Bearer {token}"}
-        with httpx.Client(
-            base_url=_API_BASE, headers=headers, transport=transport, timeout=_TIMEOUT
-        ) as client:
-            while True:
-                resp = client.get(f"/{method}", params=params)
-                if resp.status_code == 429:
-                    # Tier-limited: wait the advertised Retry-After, then retry.
-                    # Retry-After may be a number of seconds OR an HTTP-date; only
-                    # the numeric form is expected here, so fall back on anything else.
-                    try:
-                        retry_after = float(resp.headers.get("Retry-After", "1") or "1")
-                    except ValueError:
-                        retry_after = 5.0
-                    sleep(max(retry_after, 1.0))
-                    continue
-                resp.raise_for_status()
-                data = resp.json()
-                break
+            try:
+                resp = web.api_call(method, http_verb="GET", params=params)
+                data = dict(resp.data)
+            except SlackApiError as exc:  # pragma: no cover - needs live sdk+network
+                data = dict(getattr(exc.response, "data", {}) or {})
+                if not data:
+                    raise SlackError(str(exc)) from exc
+            if not data.get("ok", False):
+                raise SlackError(f"slack {method} failed: {data.get('error', 'unknown')}")
+            return data
+
+    headers = {"Authorization": f"Bearer {token}"}
+    with httpx.Client(
+        base_url=_API_BASE, headers=headers, transport=transport, timeout=_TIMEOUT
+    ) as http:
+        while True:
+            resp = http.get(f"/{method}", params=params)
+            if resp.status_code == 429:
+                # Tier-limited: wait the advertised Retry-After, then retry.
+                # Retry-After may be a number of seconds OR an HTTP-date; only
+                # the numeric form is expected here, so fall back on anything else.
+                try:
+                    retry_after = float(resp.headers.get("Retry-After", "1") or "1")
+                except ValueError:
+                    retry_after = 5.0
+                sleep(max(retry_after, 1.0))
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            break
 
     if not data.get("ok", False):
         raise SlackError(f"slack {method} failed: {data.get('error', 'unknown')}")
@@ -304,8 +307,11 @@ def _paginate(
     *,
     transport: "httpx.BaseTransport | None" = None,
     sleep: Callable[[float], None] = time.sleep,
+    client: Optional[Any] = None,
+    max_items: Optional[int] = None,
 ) -> list[dict[str, Any]]:
-    """Collect every item across cursor pages (``response_metadata.next_cursor``)."""
+    """Collect items across cursor pages (``response_metadata.next_cursor``),
+    stopping early once ``max_items`` have been collected when given."""
     items: list[dict[str, Any]] = []
     cursor: Optional[str] = None
     base = dict(params or {})
@@ -313,14 +319,16 @@ def _paginate(
         page_params = dict(base)
         if cursor:
             page_params["cursor"] = cursor
-        data = _call(method, token, page_params, transport=transport, sleep=sleep)
+        data = _call(method, token, page_params, transport=transport, sleep=sleep, client=client)
         chunk = data.get(result_key) or []
         if isinstance(chunk, list):
             items.extend(x for x in chunk if isinstance(x, dict))
+        if max_items is not None and len(items) >= max_items:
+            break
         cursor = ((data.get("response_metadata") or {}).get("next_cursor") or "").strip()
         if not cursor:
             break
-    return items
+    return items[:max_items] if max_items is not None else items
 
 
 def list_channels(
@@ -354,20 +362,16 @@ def list_channels(
 # users.list -> id -> (email, real_name, display_name)
 # --------------------------------------------------------------------------- #
 def _load_users(
-    token: str, *, transport: "httpx.BaseTransport | None" = None
+    token: str,
+    *,
+    transport: "httpx.BaseTransport | None" = None,
+    client: Optional[Any] = None,
 ) -> dict[str, dict[str, Any]]:
     """Map ``user_id -> user record`` from ``users.list`` (paginated)."""
-    members = _paginate("users.list", token, "members", {"limit": 200}, transport=transport)
+    members = _paginate(
+        "users.list", token, "members", {"limit": 200}, transport=transport, client=client
+    )
     return {str(m.get("id")): m for m in members if m.get("id")}
-
-
-def _user_email(rec: dict[str, Any]) -> Optional[str]:
-    profile = rec.get("profile") or {}
-    if isinstance(profile, dict):
-        email = profile.get("email")
-        if email:
-            return str(email)
-    return None
 
 
 def _user_display(rec: dict[str, Any]) -> Optional[str]:
@@ -378,14 +382,22 @@ def _user_display(rec: dict[str, Any]) -> Optional[str]:
 
 
 def _channel_label(
-    token: str, channel_id: str, *, transport: "httpx.BaseTransport | None" = None
+    token: str,
+    channel_id: str,
+    *,
+    transport: "httpx.BaseTransport | None" = None,
+    client: Optional[Any] = None,
 ) -> str:
     """Resolve a channel id to a human label via ``conversations.info``.
 
     Falls back to the id itself (IMs have no name, or info may be unavailable)."""
     try:
         data = _call(
-            "conversations.info", token, {"channel": channel_id}, transport=transport
+            "conversations.info",
+            token,
+            {"channel": channel_id},
+            transport=transport,
+            client=client,
         )
     except SlackError:
         return channel_id
@@ -412,18 +424,29 @@ def ingest_channels(
     from the Slack epoch-seconds string; ``thread_id`` is the ``thread_ts``.
 
     ``oldest`` (unix seconds) bounds history to messages at or after that time.
+    Per channel, ingest stops at :data:`MAX_MESSAGES` messages (the same bound
+    the git ingester applies to commits).
     """
-    users = _load_users(token, transport=transport)
+    # One WebClient for the whole run (the SDK is fast to construct and holds a
+    # connection pool); tests inject a transport instead, which forces httpx.
+    client = None if transport is not None else _web_client(token)
+    users = _load_users(token, transport=transport, client=client)
     nodes: list[Node] = []
     seen_authors: set[str] = set()
 
     for channel_id in channel_ids:
-        label = _channel_label(token, channel_id, transport=transport)
+        label = _channel_label(token, channel_id, transport=transport, client=client)
         params: dict[str, Any] = {"channel": channel_id, "limit": 999}
         if oldest is not None:
             params["oldest"] = oldest
         history = _paginate(
-            "conversations.history", token, "messages", params, transport=transport
+            "conversations.history",
+            token,
+            "messages",
+            params,
+            transport=transport,
+            client=client,
+            max_items=MAX_MESSAGES,
         )
         for msg in history:
             if msg.get("type", "message") != "message":
@@ -432,7 +455,7 @@ def ingest_channels(
                 continue
             user_id = msg.get("user")
             rec = users.get(str(user_id)) if user_id is not None else None
-            author = (_user_email(rec) if rec else None) or user_id
+            author = (slack_user_email(rec) if rec else None) or user_id
             if user_id is not None:
                 seen_authors.add(str(user_id))
 
@@ -472,70 +495,10 @@ def ingest_channels(
         nodes.append(
             person_node(
                 source="slack",
-                email=_user_email(rec),
+                email=slack_user_email(rec),
                 name=rec.get("real_name") or rec.get("name"),
                 handle=_user_display(rec),
             )
         )
     return nodes
 
-
-# --------------------------------------------------------------------------- #
-# Token storage (OS keyring if available; else a 0600 file under the store)
-# --------------------------------------------------------------------------- #
-def _token_file(store_root: "str | Path") -> Path:
-    return Path(store_root) / _TOKEN_FILENAME
-
-
-def save_token(token: str, store_root: "str | Path") -> None:
-    """Persist the token in the OS keyring if available, else a 0600 file."""
-    try:
-        import keyring  # optional; MIT
-
-        keyring.set_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT, token)
-        return
-    except Exception:
-        pass
-
-    root = Path(store_root)
-    root.mkdir(parents=True, exist_ok=True)
-    path = _token_file(root)
-    path.write_text(token, encoding="utf-8")
-    try:
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
-    except OSError:
-        pass
-
-
-def load_token(store_root: "str | Path") -> Optional[str]:
-    """Load a stored token (keyring first, then the file), or ``None``."""
-    try:
-        import keyring  # optional; MIT
-
-        token = keyring.get_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
-        if token:
-            return token
-    except Exception:
-        pass
-
-    path = _token_file(store_root)
-    if path.exists():
-        text = path.read_text(encoding="utf-8").strip()
-        return text or None
-    return None
-
-
-def clear_token(store_root: "str | Path") -> None:
-    """Remove any stored token from both the keyring and the file store."""
-    try:
-        import keyring  # optional; MIT
-
-        keyring.delete_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
-    except Exception:
-        pass
-
-    path = _token_file(store_root)
-    try:
-        path.unlink()
-    except OSError:
-        pass

@@ -26,6 +26,7 @@ from ..models import (
     Claim,
     Commit,
     Decision,
+    Edge,
     EdgeStatus,
     EdgeType,
     File,
@@ -37,6 +38,45 @@ from ..models import (
     Person,
     PipelineStep,
 )
+from ..textutil import min_dt as _min
+from ..textutil import naive as _naive
+from ..textutil import trim as _trim
+
+
+class _Ctx:
+    """One-pass indexes for briefing generation.
+
+    The briefing walks edges by endpoint and resolves people by email thousands
+    of times on a large graph; scanning all edges / all persons per call made
+    each walk O(E) or O(P). Both indexes are built once here.
+    """
+
+    def __init__(self, graph: Graph):
+        self.graph = graph
+        self.by_src: dict[str, list[Edge]] = defaultdict(list)
+        self.by_dst: dict[str, list[Edge]] = defaultdict(list)
+        for e in graph.edges:
+            self.by_src[e.src].append(e)
+            self.by_dst[e.dst].append(e)
+        self.person_by_email: dict[str, str] = {}
+        for p in graph.nodes_of("person"):
+            assert isinstance(p, Person)
+            self.person_by_email.setdefault(p.id, p.id)
+            for e in p.emails:
+                self.person_by_email.setdefault(e.lower(), p.id)
+
+    def out(self, node_id: str, type: Optional[EdgeType] = None) -> list[Edge]:
+        return [e for e in self.by_src.get(node_id, ()) if type is None or e.type == type]
+
+    def inc(self, node_id: str, type: Optional[EdgeType] = None) -> list[Edge]:
+        return [e for e in self.by_dst.get(node_id, ()) if type is None or e.type == type]
+
+    def person_for(self, email: Optional[str]) -> Optional[str]:
+        """The Person node id for an email address, participant handle, or
+        person id. Mirrors the original first-match scan order."""
+        if not email:
+            return None
+        return self.person_by_email.get(email.lower())
 
 
 def generate_briefing(
@@ -45,8 +85,9 @@ def generate_briefing(
     cfg: Optional[Config] = None,
     pipeline: Optional[str] = None,
 ) -> str:
+    ctx = _Ctx(graph)
     steps = _select_steps(graph, pipeline)
-    jobruns = _jobruns_for(graph, steps)
+    jobruns = _jobruns_for(ctx, steps)
     out: list[str] = []
     title = pipeline or (steps[0].name if steps else "all pipelines")
     out.append(f"# Inheritance Briefing — {title}\n")
@@ -55,12 +96,12 @@ def generate_briefing(
         "literature. Committed edges are cited; unverified links are listed in §7._\n"
     )
     out += _s1_what(graph, steps)
-    out += _s2_runs(graph, jobruns)
-    out += _s3_decisions(graph, jobruns)
-    out += _s4_produced(graph, jobruns)
+    out += _s2_runs(ctx, jobruns)
+    out += _s3_decisions(ctx, jobruns)
+    out += _s4_produced(ctx, jobruns)
     out += _s5_runnable(graph, steps, jobruns)
-    out += _s6_who(graph, steps, jobruns)
-    out += _s7_gaps(graph, steps, jobruns)
+    out += _s6_who(ctx, steps, jobruns)
+    out += _s7_gaps(ctx, steps, jobruns)
     return "\n".join(out)
 
 
@@ -76,15 +117,15 @@ def _select_steps(graph: Graph, pipeline: Optional[str]) -> list[PipelineStep]:
     return steps
 
 
-def _jobruns_for(graph: Graph, steps: list[PipelineStep]) -> list[JobRun]:
+def _jobruns_for(ctx: _Ctx, steps: list[PipelineStep]) -> list[JobRun]:
     step_ids = {s.id for s in steps}
     if not step_ids:
-        return [j for j in graph.nodes_of("job_run") if isinstance(j, JobRun)]
+        return [j for j in ctx.graph.nodes_of("job_run") if isinstance(j, JobRun)]
     runs = []
-    for jr in graph.nodes_of("job_run"):
-        if any(e.dst in step_ids for e in graph.out_edges(jr.id, EdgeType.produced_by)):
+    for jr in ctx.graph.nodes_of("job_run"):
+        if any(e.dst in step_ids for e in ctx.out(jr.id, EdgeType.produced_by)):
             runs.append(jr)
-    return runs or [j for j in graph.nodes_of("job_run") if isinstance(j, JobRun)]
+    return runs or [j for j in ctx.graph.nodes_of("job_run") if isinstance(j, JobRun)]
 
 
 # --------------------------------------------------------------------------- #
@@ -104,7 +145,7 @@ def _s1_what(graph: Graph, steps: list[PipelineStep]) -> list[str]:
     return out
 
 
-def _s2_runs(graph: Graph, jobruns: list[JobRun]) -> list[str]:
+def _s2_runs(ctx: _Ctx, jobruns: list[JobRun]) -> list[str]:
     out = ["\n## 2. What it was actually run with\n"]
     if not jobruns:
         out.append("_No job runs recorded._\n")
@@ -112,7 +153,7 @@ def _s2_runs(graph: Graph, jobruns: list[JobRun]) -> list[str]:
     # recurring vs drifted params
     values: dict[str, set[str]] = defaultdict(set)
     for jr in jobruns:
-        for p in _params_of(graph, jr):
+        for p in _params_of(ctx, jr):
             values[p.key].add(p.value)
     recurring = {k: next(iter(v)) for k, v in values.items() if len(v) == 1}
     drifted = {k: sorted(v) for k, v in values.items() if len(v) > 1}
@@ -140,14 +181,14 @@ def _s2_runs(graph: Graph, jobruns: list[JobRun]) -> list[str]:
     return out
 
 
-def _s3_decisions(graph: Graph, jobruns: list[JobRun]) -> list[str]:
+def _s3_decisions(ctx: _Ctx, jobruns: list[JobRun]) -> list[str]:
     out = ["\n## 3. Decisions nobody wrote down\n"]
     seen: set[str] = set()
     any_found = False
     for jr in jobruns:
-        for p in _params_of(graph, jr):
-            for e in graph.out_edges(p.id, EdgeType.justified_by):
-                d = graph.nodes.get(e.dst)
+        for p in _params_of(ctx, jr):
+            for e in ctx.out(p.id, EdgeType.justified_by):
+                d = ctx.graph.nodes.get(e.dst)
                 if not isinstance(d, Decision) or d.id in seen:
                     continue
                 if e.status != EdgeStatus.committed:
@@ -157,31 +198,31 @@ def _s3_decisions(graph: Graph, jobruns: list[JobRun]) -> list[str]:
                 out.append(f"- **`{p.key} = {p.value}`** was justified by a decision "
                            f"(confidence {e.confidence:.2f}):")
                 out.append(f"  > {d.statement}")
-                who = ", ".join(_name(graph, a) for a in d.participants) or "unknown"
+                who = ", ".join(_name(ctx, a) for a in d.participants) or "unknown"
                 out.append(f"  - participants: {who}")
-                for msg_edge in graph.out_edges(d.id, EdgeType.sourced_from):
-                    m = graph.nodes.get(msg_edge.dst)
+                for msg_edge in ctx.out(d.id, EdgeType.sourced_from):
+                    m = ctx.graph.nodes.get(msg_edge.dst)
                     if isinstance(m, Message):
-                        out.append(f"  - {_name(graph, m.author)}: “{_trim(m.text, 200)}”")
+                        out.append(f"  - {_name(ctx, m.author)}: “{_trim(m.text, 200)}”")
     if not any_found:
         out.append("_No committed parameter→decision→conversation chains for this "
                    "pipeline (see §7 for unverified candidates)._\n")
     return out
 
 
-def _s4_produced(graph: Graph, jobruns: list[JobRun]) -> list[str]:
+def _s4_produced(ctx: _Ctx, jobruns: list[JobRun]) -> list[str]:
     out = ["\n## 4. What it produced\n"]
     any_found = False
     for jr in jobruns:
-        for we in graph.out_edges(jr.id, EdgeType.wrote):
-            f = graph.nodes.get(we.dst)
+        for we in ctx.out(jr.id, EdgeType.wrote):
+            f = ctx.graph.nodes.get(we.dst)
             if not isinstance(f, File):
                 continue
             claims = []
-            for ae in graph.out_edges(f.id, EdgeType.appears_in):
-                c = graph.nodes.get(ae.dst)
+            for ae in ctx.out(f.id, EdgeType.appears_in):
+                c = ctx.graph.nodes.get(ae.dst)
                 if isinstance(c, Claim):
-                    paper = _paper_of(graph, c)
+                    paper = _paper_of(ctx, c)
                     claims.append((c, paper, ae))
             if claims:
                 any_found = True
@@ -217,28 +258,28 @@ def _s5_runnable(graph: Graph, steps: list[PipelineStep], jobruns: list[JobRun])
     return out
 
 
-def _s6_who(graph: Graph, steps: list[PipelineStep], jobruns: list[JobRun]) -> list[str]:
+def _s6_who(ctx: _Ctx, steps: list[PipelineStep], jobruns: list[JobRun]) -> list[str]:
     out = ["\n## 6. Who to ask\n"]
     score: dict[str, int] = defaultdict(int)
     last_active: dict[str, str] = {}
     # commit authors of the repo's files
-    for c in graph.nodes_of("commit"):
+    for c in ctx.graph.nodes_of("commit"):
         assert isinstance(c, Commit)
-        pid = _person_by_email(graph, c.author)
+        pid = ctx.person_for(c.author)
         if pid:
             score[pid] += 1
             if c.ts:
                 ts = c.ts.isoformat()
                 last_active[pid] = max(last_active.get(pid, ""), ts)
     # decision participants + message authors
-    for d in graph.nodes_of("decision"):
+    for d in ctx.graph.nodes_of("decision"):
         assert isinstance(d, Decision)
         for a in d.participants:
-            pid = _person_by_email(graph, a) or a
+            pid = ctx.person_for(a) or a
             score[pid] += 2
-    for m in graph.nodes_of("message"):
+    for m in ctx.graph.nodes_of("message"):
         assert isinstance(m, Message)
-        pid = _person_by_email(graph, m.author) or (m.author or "")
+        pid = ctx.person_for(m.author) or (m.author or "")
         if pid:
             score[pid] += 1
             if m.ts:
@@ -248,20 +289,20 @@ def _s6_who(graph: Graph, steps: list[PipelineStep], jobruns: list[JobRun]) -> l
         return out
     ranked = sorted(score.items(), key=lambda kv: kv[1], reverse=True)[:8]
     for pid, sc in ranked:
-        name = _name(graph, pid)
+        name = _name(ctx, pid)
         la = last_active.get(pid)
         la_s = f", last active {la[:10]}" if la else ""
         out.append(f"- **{name}** — involvement {sc}{la_s}")
     return out
 
 
-def _s7_gaps(graph: Graph, steps: list[PipelineStep], jobruns: list[JobRun]) -> list[str]:
+def _s7_gaps(ctx: _Ctx, steps: list[PipelineStep], jobruns: list[JobRun]) -> list[str]:
     out = ["\n## 7. Unverified / hypothesis edges (someone should confirm)\n"]
     relevant_nodes = {s.id for s in steps} | {j.id for j in jobruns}
     for jr in jobruns:
-        relevant_nodes |= {p.id for p in _params_of(graph, jr)}
+        relevant_nodes |= {p.id for p in _params_of(ctx, jr)}
     hyps = [
-        e for e in graph.edges
+        e for e in ctx.graph.edges
         if e.status == EdgeStatus.hypothesis
         and (not relevant_nodes or e.src in relevant_nodes or e.dst in relevant_nodes)
     ]
@@ -271,7 +312,7 @@ def _s7_gaps(graph: Graph, steps: list[PipelineStep], jobruns: list[JobRun]) -> 
     hyps.sort(key=lambda e: e.confidence, reverse=True)
     for e in hyps:
         out.append(
-            f"- `{_short(graph, e.src)}` **{e.type.value}** `{_short(graph, e.dst)}` "
+            f"- `{_short(ctx.graph, e.src)}` **{e.type.value}** `{_short(ctx.graph, e.dst)}` "
             f"— confidence {e.confidence:.2f}. {e.rationale}"
         )
     return out
@@ -280,46 +321,36 @@ def _s7_gaps(graph: Graph, steps: list[PipelineStep], jobruns: list[JobRun]) -> 
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
-def _params_of(graph: Graph, jr: JobRun) -> list[Param]:
+def _params_of(ctx: _Ctx, jr: JobRun) -> list[Param]:
     out = []
-    for e in graph.out_edges(jr.id, EdgeType.used):
-        p = graph.nodes.get(e.dst)
+    for e in ctx.out(jr.id, EdgeType.used):
+        p = ctx.graph.nodes.get(e.dst)
         if isinstance(p, Param):
             out.append(p)
     return out
 
 
-def _paper_of(graph: Graph, claim: Claim) -> Optional[Paper]:
-    for e in graph.in_edges(claim.id, EdgeType.contains):
-        p = graph.nodes.get(e.src)
+def _paper_of(ctx: _Ctx, claim: Claim) -> Optional[Paper]:
+    for e in ctx.inc(claim.id, EdgeType.contains):
+        p = ctx.graph.nodes.get(e.src)
         if isinstance(p, Paper):
             return p
     if claim.paper_ref:
-        p = graph.nodes.get(claim.paper_ref)
+        p = ctx.graph.nodes.get(claim.paper_ref)
         if isinstance(p, Paper):
             return p
     return None
 
 
-def _person_by_email(graph: Graph, email: Optional[str]) -> Optional[str]:
-    if not email:
-        return None
-    for p in graph.nodes_of("person"):
-        assert isinstance(p, Person)
-        if email.lower() in [e.lower() for e in p.emails] or email == p.id:
-            return p.id
-    return None
-
-
-def _name(graph: Graph, ref: Optional[str]) -> str:
+def _name(ctx: _Ctx, ref: Optional[str]) -> str:
     if not ref:
         return "unknown"
-    n = graph.nodes.get(ref)
+    n = ctx.graph.nodes.get(ref)
     if isinstance(n, Person):
         return n.display_name or n.canonical_id
-    pid = _person_by_email(graph, ref)
+    pid = ctx.person_for(ref)
     if pid:
-        n = graph.nodes.get(pid)
+        n = ctx.graph.nodes.get(pid)
         if isinstance(n, Person):
             return n.display_name or n.canonical_id
     return ref
@@ -334,17 +365,3 @@ def _short(graph: Graph, node_id: str) -> str:
         if v:
             return f"{n.kind}:{_trim(str(v), 40)}"
     return node_id
-
-
-def _trim(s: str, n: int) -> str:
-    s = " ".join(str(s).split())
-    return s if len(s) <= n else s[: n - 1] + "…"
-
-
-def _min():
-    from datetime import datetime
-    return datetime.min
-
-
-def _naive(dt):
-    return dt.replace(tzinfo=None) if dt is not None and dt.tzinfo is not None else dt

@@ -12,10 +12,9 @@ contract:
 * Every commit author becomes a ``Person`` node via the shared ``person_node``
   helper, so the same human collapses to one id across git / Slack / email / papers.
 
-Robustness is a first-class concern: the primary path uses GitPython
-(``import git``); if that import (or the repo open) fails for any reason we fall
-back to shelling out to the ``git`` binary (``git log --pretty`` + ``--name-only``).
-An empty repository (0 commits) yields an empty list rather than an error.
+The history walk shells out to the ``git`` binary once (``git log --pretty`` +
+``--name-only``). An empty repository (0 commits) yields an empty list rather than
+an error.
 """
 
 from __future__ import annotations
@@ -136,106 +135,6 @@ def _add_file_nodes(
         )
 
 
-def _ingest_with_gitpython(
-    repo_path: str,
-    repo_name: str,
-    store: Optional["ArtifactStore"],
-) -> list[Node]:
-    """Primary path: walk history via GitPython.
-
-    Raises on any failure (bad import, not-a-repo, walk error) so the caller can
-    decide to fall back to the ``git`` CLI. An empty repo returns ``[]`` without
-    raising.
-    """
-    import git  # may raise ImportError -> caller falls back to subprocess
-
-    # ``Repo`` raises for a non-repo / bare path; let it propagate to the caller.
-    repo = git.Repo(repo_path)
-
-    # Deterministic, de-duplicating accumulators keyed by node id.
-    nodes: dict[str, Node] = {}
-    persons: dict[str, Node] = {}
-    files: dict[str, Node] = {}
-
-    try:
-        commit_iter = repo.iter_commits(max_count=MAX_COMMITS)
-    except Exception:
-        # No HEAD yet / unborn branch == zero commits.
-        return []
-
-    for commit in commit_iter:
-        try:
-            sha = commit.hexsha
-        except Exception:
-            continue  # skip a pathological commit rather than abort
-
-        # --- author -> Person (defensive about missing actor fields) ---------
-        author = getattr(commit, "author", None)
-        author_email = getattr(author, "email", None) if author else None
-        author_name = getattr(author, "name", None) if author else None
-        if author_email or author_name:
-            person = person_node(
-                source="github",
-                email=author_email,
-                name=author_name,
-            )
-            persons.setdefault(person.id, person)
-
-        # --- timestamp -------------------------------------------------------
-        ts = _coerce_dt(getattr(commit, "committed_datetime", None))
-        if ts is None:
-            ts = _coerce_dt(getattr(commit, "committed_date", None))
-
-        # --- touched files ---------------------------------------------------
-        touched: list[str] = []
-        try:
-            touched = [p for p in commit.stats.files.keys()]
-        except Exception:
-            touched = []
-
-        # --- message ---------------------------------------------------------
-        message = getattr(commit, "message", None)
-        if isinstance(message, bytes):
-            message = message.decode("utf-8", errors="replace")
-        message = (message or "").strip() or None
-
-        commit_prov = Provenance(
-            source="github",
-            path=repo_path,
-            mtime=ts,
-            hash=sha,
-            actor=author_email or author_name,
-        )
-
-        # Optionally persist the raw commit message blob for later citation.
-        if store is not None and message:
-            try:
-                store.put(
-                    message,
-                    source="github",
-                    path=f"{repo_name}@{sha}",
-                    actor=author_email or author_name,
-                )
-            except Exception:
-                pass  # persistence is best-effort; never break ingest over it
-
-        cid = make_id("commit", repo_name, sha)
-        nodes[cid] = Commit(
-            id=cid,
-            sha=sha,
-            repo=repo_name,
-            ts=ts,
-            author=author_email,
-            message=message,
-            touched_files=touched,
-            provenance=commit_prov,
-        )
-
-        _add_file_nodes(touched, repo_name, commit_prov, files)
-
-    return list(nodes.values()) + list(files.values()) + list(persons.values())
-
-
 # Unit / record separators used to make ``git log`` output unambiguous even when
 # commit summaries contain spaces, tabs, or other punctuation.
 _FS = "\x1f"  # field separator (between commit metadata fields)
@@ -247,7 +146,7 @@ def _ingest_with_subprocess(
     repo_name: str,
     store: Optional["ArtifactStore"],
 ) -> list[Node]:
-    """Fallback path: parse ``git log`` output from the ``git`` binary.
+    """Parse ``git log`` output from the ``git`` binary.
 
     Uses a record/field-separator pretty format plus ``--name-only`` so we can
     reliably split commit metadata from the list of touched paths. Returns ``[]``
@@ -375,18 +274,10 @@ def ingest_git(
 
     Notes
     -----
-    Tries GitPython first; on any failure (missing library, unreadable repo)
-    falls back to the ``git`` CLI. Both paths are bounded to the
+    The walk is a single ``git log`` subprocess call, bounded to the
     :data:`MAX_COMMITS` most-recent commits.
     """
     repo_name = _repo_basename(repo_path)
-
-    # Primary: GitPython. Fall back to the CLI on *any* failure so a broken
-    # GitPython install or an odd repo layout can't take the ingester down.
-    try:
-        return _ingest_with_gitpython(repo_path, repo_name, store)
-    except Exception:
-        pass
 
     try:
         return _ingest_with_subprocess(repo_path, repo_name, store)
